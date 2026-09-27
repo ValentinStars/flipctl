@@ -4247,7 +4247,7 @@ fn panel(
                     eprintln!("key            {:?} down={} to {front}", event.key, event.down);
                 }
                 match event.key {
-                    FlipperKey::Back | FlipperKey::AppSwitch => {
+                    FlipperKey::Back | FlipperKey::Escape | FlipperKey::AppSwitch => {
                         if event.down {
                             leave = Some(event.key == FlipperKey::AppSwitch);
                         }
@@ -4429,21 +4429,29 @@ fn panel(
             }
 
             if let Some(deck) = leave {
-                // Left running, not stopped: an app in the background is the point of
-                // a switcher, and its output keeps drawing for its card.
-                eprintln!("app            {front} to the background");
                 wl_front = None;
                 window.request_redraw();
                 if deck {
-                    // The deck opens over the screen the app was started from, not
-                    // over the app: Back from the deck is the way out, and it must
-                    // not land back inside what it was opened over.
+                    // AppSwitch (Tab) was pressed: open switcher and keep app running in background.
+                    eprintln!("app            {front} to the background");
                     before_switcher = launched_from;
                     swallow_release = Some(FlipperKey::AppSwitch);
                     switcher = Some(flipper_ui::switcher::Switcher::open(&recents, true));
                     switch_dirty = true;
                     screen.set_screen(Screen::Switcher);
                 } else {
+                    // Back/Escape was pressed: user exited the app to return to FlipCTL.
+                    // Stop the app completely so it does not linger in the background or keep playing audio.
+                    if let Some(at) = wl_apps.iter().position(|a| a.name == front) {
+                        let gone = wl_apps.remove(at);
+                        if let Some(host) = host.as_mut() {
+                            host.release(gone.place.clone(), gone.size.0, gone.size.1);
+                        }
+                        attention.remove(&gone.name);
+                        recents.close(&gone.name);
+                        drop(gone);
+                        eprintln!("app            {front} stopped on exit");
+                    }
                     screen.set_screen(launched_from);
                 }
             }

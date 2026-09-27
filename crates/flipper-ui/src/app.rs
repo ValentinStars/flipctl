@@ -614,16 +614,74 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
 /// manager. Launches put the app in its own process group so the whole group can be
 /// signalled here.
 ///
-/// TERM first, because a program that has a chance to exit tidily takes its
-/// temporary files with it, then KILL for whatever ignored it.
+/// All descendant process IDs of `root`, plus any processes sharing its process group or session.
+pub fn descendants(root: u32) -> Vec<u32> {
+    let mut tree = std::collections::HashSet::new();
+    tree.insert(root);
+
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return vec![root];
+    };
+
+    let mut ppid_map = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_name) = entry.file_name().into_string() else { continue };
+        let Ok(pid) = file_name.parse::<u32>() else { continue };
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            if let Some(after) = stat.rfind(')') {
+                let parts: Vec<&str> = stat[after + 1..].split_whitespace().collect();
+                if let Some(ppid) = parts.get(1).and_then(|p| p.parse::<u32>().ok()) {
+                    ppid_map.push((pid, ppid));
+                }
+                if let Some(pgrp) = parts.get(2).and_then(|p| p.parse::<u32>().ok()) {
+                    if pgrp == root {
+                        tree.insert(pid);
+                    }
+                }
+                if let Some(session) = parts.get(3).and_then(|p| p.parse::<u32>().ok()) {
+                    if session == root {
+                        tree.insert(pid);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &(pid, ppid) in &ppid_map {
+            if tree.contains(&ppid) && tree.insert(pid) {
+                changed = true;
+            }
+        }
+    }
+
+    tree.into_iter().collect()
+}
+
+/// Stop the app and its entire process tree.
+///
+/// Sends SIGTERM to the process group, the root PID, and all descendant processes,
+/// then escalates to SIGKILL if any process survives.
 pub fn stop_group(pid: u32) {
+    let mut procs = descendants(pid);
+    if !procs.contains(&pid) {
+        procs.push(pid);
+    }
     let group = -(pid as i32);
     unsafe {
-        libc::kill(group, libc::SIGTERM);
+        let _ = libc::kill(group, libc::SIGTERM);
+        for &p in &procs {
+            let _ = libc::kill(p as i32, libc::SIGTERM);
+        }
     }
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     unsafe {
-        libc::kill(group, libc::SIGKILL);
+        let _ = libc::kill(group, libc::SIGKILL);
+        for &p in &procs {
+            let _ = libc::kill(p as i32, libc::SIGKILL);
+        }
     }
 }
 
