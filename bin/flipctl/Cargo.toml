@@ -6,7 +6,7 @@ license.workspace = true
 description = "Walks every flipper-ui component on the panel, a serial console or a browser"
 
 [features]
-default = []
+default = ["wayland", "remote", "slint"]
 device = ["flipper-ui/device"]
 remote = ["flipper-ui/remote"]
 slint = ["flipper-ui/screens", "dep:png", "dep:slint"]
