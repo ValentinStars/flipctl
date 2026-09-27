@@ -332,11 +332,11 @@ fn serve(
         // The panel in its device photo is the default view; the side-by-side
         // comparison lives at /diff. /device and /compare are kept as aliases so
         // older links do not break.
-        ("GET", "/") | ("GET", "/index.html") | ("GET", "/device") => write_response(
+        ("GET", "/") | ("HEAD", "/") | ("GET", "/index.html") | ("HEAD", "/index.html") | ("GET", "/device") | ("HEAD", "/device") => write_response(
             &mut stream,
             "200 OK",
             "text/html; charset=utf-8",
-            device_page.as_bytes(),
+            if method == "HEAD" { b"" } else { device_page.as_bytes() },
         ),
         // Shared browser code, so a fix cannot land in one page and not the other.
         //

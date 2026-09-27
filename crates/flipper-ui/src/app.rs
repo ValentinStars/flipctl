@@ -434,11 +434,153 @@ impl Missing {
     }
 }
 
+/// Supported system package managers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageManager {
+    Pacman,
+    Apt,
+    Dnf,
+    None,
+}
+
+pub fn which_bin(name: &str) -> Option<PathBuf> {
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for dir in ["/usr/bin", "/bin", "/usr/local/bin", "/usr/sbin", "/sbin"] {
+        let candidate = Path::new(dir).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+pub fn detect_package_manager() -> PackageManager {
+    let has_pacman = which_bin("pacman").is_some();
+    let has_apt = which_bin("apt-get").is_some();
+    let is_arch = Path::new("/etc/arch-release").exists() || Path::new("/etc/manjaro-release").exists();
+
+    if is_arch && has_pacman {
+        return PackageManager::Pacman;
+    }
+    // Check if dpkg status is a real, non-empty database
+    let valid_dpkg = std::fs::metadata("/var/lib/dpkg/status").map(|m| m.len() > 100).unwrap_or(false);
+    if valid_dpkg && (has_apt || which_bin("dpkg-query").is_some()) {
+        return PackageManager::Apt;
+    }
+    if has_pacman {
+        return PackageManager::Pacman;
+    }
+    if has_apt {
+        return PackageManager::Apt;
+    }
+    if which_bin("dnf").is_some() {
+        return PackageManager::Dnf;
+    }
+    PackageManager::None
+}
+
+fn debian_to_pacman_pkg(deb: &str) -> &str {
+    match deb {
+        "python3" => "python",
+        "python3-pip" => "python-pip",
+        "python3-setuptools" => "python-setuptools",
+        "python3-wheel" => "python-wheel",
+        "python3-pygame" => "python-pygame",
+        "python3-requests" => "python-requests",
+        "python3-numpy" => "python-numpy",
+        "python3-serial" => "python-pyserial",
+        "libsdl2-2.0-0" | "libsdl2-dev" => "sdl2",
+        "libsdl2-image-2.0-0" | "libsdl2-image-dev" => "sdl2_image",
+        "libsdl2-mixer-2.0-0" | "libsdl2-mixer-dev" => "sdl2_mixer",
+        "libsdl2-ttf-2.0-0" | "libsdl2-ttf-dev" => "sdl2_ttf",
+        "pipewire-audio-client-libraries" => "pipewire",
+        _ => deb,
+    }
+}
+
+fn is_pkg_command_present(pkg: &str) -> bool {
+    let cmd = match pkg {
+        "python3" | "python" => {
+            return which_bin("python3").is_some() || which_bin("python").is_some();
+        }
+        "curl" => "curl",
+        "jq" => "jq",
+        "mpv" => "mpv",
+        "git" => "git",
+        "ffmpeg" => "ffmpeg",
+        "pipewire" => "pipewire",
+        "wireplumber" => "wireplumber",
+        "socat" => "socat",
+        "sway" => "sway",
+        _ => return false,
+    };
+    which_bin(cmd).is_some()
+}
+
+fn missing_pacman(packages: &[String]) -> Vec<String> {
+    if packages.is_empty() {
+        return Vec::new();
+    }
+    let mut missing = Vec::new();
+    for orig in packages {
+        let mapped = debian_to_pacman_pkg(orig);
+        let out = Command::new("pacman")
+            .arg("-Qq")
+            .arg(mapped)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let is_installed = match out {
+            Ok(o) => o.status.success() && !o.stdout.is_empty(),
+            Err(_) => false,
+        };
+        if !is_installed {
+            if mapped != orig.as_str() {
+                let out2 = Command::new("pacman")
+                    .arg("-Qq")
+                    .arg(orig)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .output();
+                if let Ok(o) = out2 {
+                    if o.status.success() && !o.stdout.is_empty() {
+                        continue;
+                    }
+                }
+            }
+            missing.push(orig.clone());
+        }
+    }
+    missing
+}
+
+fn missing_dnf(packages: &[String]) -> Vec<String> {
+    if packages.is_empty() {
+        return Vec::new();
+    }
+    let mut missing = Vec::new();
+    for orig in packages {
+        let out = Command::new("rpm")
+            .arg("-q")
+            .arg(orig)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !out.map(|s| s.success()).unwrap_or(false) {
+            missing.push(orig.clone());
+        }
+    }
+    missing
+}
+
 /// Which of `packages` dpkg does not have installed.
-///
-/// One query for the lot: dpkg-query takes several names and reports a line each,
-/// and an unknown package makes it exit non-zero while still printing the ones it
-/// does know, so the output is parsed either way.
 fn missing_apt(packages: &[String]) -> Vec<String> {
     if packages.is_empty() {
         return Vec::new();
@@ -450,8 +592,6 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
         .stderr(Stdio::null())
         .output();
     let Ok(out) = out else {
-        // No dpkg at all: nothing can be checked, so claim nothing is missing
-        // rather than blocking every app behind an install that cannot work.
         return Vec::new();
     };
     let text = String::from_utf8_lossy(&out.stdout);
@@ -459,10 +599,6 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
         .lines()
         .filter_map(|l| {
             let (name, status) = l.split_once(' ')?;
-            // Without the architecture: dpkg prints `qt6-wayland:arm64` for anything
-            // marked Multi-Arch: same, and a manifest names the package, not the
-            // build of it. Comparing the two verbatim reported every multi-arch
-            // dependency as missing however many times it was installed.
             let name = name.split(':').next()?;
             (status.trim() == "installed").then_some(name)
         })
@@ -520,40 +656,87 @@ pub fn ancestors(pid: u32) -> Vec<u32> {
 
 /// What `entry` still needs.
 ///
-/// Blocking: it runs dpkg-query, so callers put it on a thread rather than in a
-/// render loop.
+/// Blocking: callers put it on a thread rather than in a render loop.
 pub fn missing(entry: &AppEntry) -> Missing {
-    Missing { apt: missing_apt(&entry.apt) }
+    if entry.apt.is_empty() {
+        return Missing::default();
+    }
+    // Fast path: check if package binary is already installed in PATH
+    let to_check: Vec<String> = entry
+        .apt
+        .iter()
+        .filter(|p| !is_pkg_command_present(p))
+        .cloned()
+        .collect();
+    if to_check.is_empty() {
+        return Missing::default();
+    }
+
+    let pm = detect_package_manager();
+    let uninstalled = match pm {
+        PackageManager::Pacman => missing_pacman(&to_check),
+        PackageManager::Apt => missing_apt(&to_check),
+        PackageManager::Dnf => missing_dnf(&to_check),
+        PackageManager::None => Vec::new(),
+    };
+    Missing { apt: uninstalled }
 }
 
 /// Install what an app needs, reporting progress as lines.
 ///
-/// Blocking and slow: apt reaches the network. `log` is called per output line so
-/// a caller can show it while it runs, which matters because this can take a
-/// minute and a frozen screen looks broken.
+/// Blocking and slow: reaches the network. `log` is called per output line so
+/// a caller can show it while it runs.
 pub fn install(missing: &Missing, mut log: impl FnMut(String)) -> Result<(), String> {
-    if !missing.apt.is_empty() {
-        // Always update first. A device flashed from a stock image has no package
-        // lists at all, and one that has sat for a while has stale ones, so the
-        // install fails with "unable to locate package" for a package that is in
-        // the archive. The cost is one round trip against a minute of installing.
-        log("apt-get update".into());
-        run_logged(
-            Command::new("sudo")
-                .args(["apt-get", "update"])
-                .env("DEBIAN_FRONTEND", "noninteractive"),
-            &mut log,
-        )?;
-        log(format!("apt: {}", missing.apt.join(" ")));
-        run_logged(
-            Command::new("sudo")
-                .args(["apt-get", "install", "-y", "--no-install-recommends"])
-                .args(&missing.apt)
-                // Non-interactive: a package that stops to ask a question would
-                // hang here with nobody able to answer it.
-                .env("DEBIAN_FRONTEND", "noninteractive"),
-            &mut log,
-        )?;
+    if missing.apt.is_empty() {
+        log("done".into());
+        return Ok(());
+    }
+    let pm = detect_package_manager();
+    match pm {
+        PackageManager::Pacman => {
+            log("pacman database check".into());
+            let mapped_pkgs: Vec<String> = missing
+                .apt
+                .iter()
+                .map(|p| debian_to_pacman_pkg(p).to_string())
+                .collect();
+            log(format!("pacman: {}", mapped_pkgs.join(" ")));
+            run_logged(
+                Command::new("sudo")
+                    .args(["pacman", "-S", "--noconfirm", "--needed"])
+                    .args(&mapped_pkgs),
+                &mut log,
+            )?;
+        }
+        PackageManager::Apt => {
+            log("apt-get update".into());
+            run_logged(
+                Command::new("sudo")
+                    .args(["apt-get", "update"])
+                    .env("DEBIAN_FRONTEND", "noninteractive"),
+                &mut log,
+            )?;
+            log(format!("apt: {}", missing.apt.join(" ")));
+            run_logged(
+                Command::new("sudo")
+                    .args(["apt-get", "install", "-y", "--no-install-recommends"])
+                    .args(&missing.apt)
+                    .env("DEBIAN_FRONTEND", "noninteractive"),
+                &mut log,
+            )?;
+        }
+        PackageManager::Dnf => {
+            log(format!("dnf: {}", missing.apt.join(" ")));
+            run_logged(
+                Command::new("sudo")
+                    .args(["dnf", "install", "-y"])
+                    .args(&missing.apt),
+                &mut log,
+            )?;
+        }
+        PackageManager::None => {
+            return Err("No supported package manager found (pacman, apt, dnf)".into());
+        }
     }
     log("done".into());
     Ok(())

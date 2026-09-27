@@ -1,0 +1,31 @@
+# ==============================================================================
+# Waveshare 1.44inch LCD HAT Kernel Configuration (Optional Linux FB mode)
+# Add these lines to /boot/firmware/config.txt (or /boot/config.txt on older OS)
+# ==============================================================================
+
+# Enable SPI controller
+dtparam=spi=on
+
+# Waveshare 1.44inch LCD HAT Device Tree Overlay (creates /dev/fb1)
+dtoverlay=waveshare-1.44
+
+# Backlight pin
+gpio=24=op,dh
+
+# (Optional) Map hardware buttons directly to Linux kernel keyboard events:
+# Key 1 (GPIO 21) -> KEY_ENTER (28)
+# Key 2 (GPIO 20) -> KEY_ESC (1)
+# Key 3 (GPIO 16) -> KEY_TAB (15)
+# Joystick Up (GPIO 6) -> KEY_UP (103)
+# Joystick Down (GPIO 19) -> KEY_DOWN (108)
+# Joystick Left (GPIO 5) -> KEY_LEFT (105)
+# Joystick Right (GPIO 26) -> KEY_RIGHT (106)
+# Joystick Press (GPIO 13) -> KEY_ENTER (28)
+dtoverlay=gpio-key,gpio=21,active_low=1,gpio_pull=up,keycode=28
+dtoverlay=gpio-key,gpio=20,active_low=1,gpio_pull=up,keycode=1
+dtoverlay=gpio-key,gpio=16,active_low=1,gpio_pull=up,keycode=15
+dtoverlay=gpio-key,gpio=6,active_low=1,gpio_pull=up,keycode=103
+dtoverlay=gpio-key,gpio=19,active_low=1,gpio_pull=up,keycode=108
+dtoverlay=gpio-key,gpio=5,active_low=1,gpio_pull=up,keycode=105
+dtoverlay=gpio-key,gpio=26,active_low=1,gpio_pull=up,keycode=106
+dtoverlay=gpio-key,gpio=13,active_low=1,gpio_pull=up,keycode=28

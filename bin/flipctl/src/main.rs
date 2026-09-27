@@ -2699,13 +2699,57 @@ fn png(
     slint::platform::update_timers_and_animations();
 
     let frame = render_frame(&window).expect("the first frame always paints");
-    let bytes: Vec<u8> = frame.iter().map(|p| p.0).collect();
+    let amber = std::env::var("FLIPCTL_AMBER")
+        .map(|v| v != "0" && v != "false" && v != "no")
+        .unwrap_or(true);
+    let scale: u32 = std::env::var("FLIPCTL_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2)
+        .clamp(1, 8);
 
     let file = std::fs::File::create(path)?;
-    let mut encoder =
-        png::Encoder::new(std::io::BufWriter::new(file), u32::from(PANEL_W), u32::from(PANEL_H));
-    encoder.set_color(png::ColorType::Grayscale);
-    encoder.set_depth(png::BitDepth::Eight);
+    let out_w = u32::from(PANEL_W) * scale;
+    let out_h = u32::from(PANEL_H) * scale;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), out_w, out_h);
+    let bytes: Vec<u8> = if amber {
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut rgb = Vec::with_capacity((out_w * out_h * 3) as usize);
+        let w = usize::from(PANEL_W);
+        let scale_usize = scale as usize;
+        for row in frame.chunks(w) {
+            for _ in 0..scale_usize {
+                for &flipper_ui::pixel::Gray8(v) in row {
+                    let r = v;
+                    let g = ((v as u32 * 130) / 255) as u8;
+                    let b = 0u8;
+                    for _ in 0..scale_usize {
+                        rgb.push(r);
+                        rgb.push(g);
+                        rgb.push(b);
+                    }
+                }
+            }
+        }
+        rgb
+    } else {
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut gray = Vec::with_capacity((out_w * out_h) as usize);
+        let w = usize::from(PANEL_W);
+        let scale_usize = scale as usize;
+        for row in frame.chunks(w) {
+            for _ in 0..scale_usize {
+                for &flipper_ui::pixel::Gray8(v) in row {
+                    for _ in 0..scale_usize {
+                        gray.push(v);
+                    }
+                }
+            }
+        }
+        gray
+    };
     encoder
         .write_header()
         .map_err(std::io::Error::other)?

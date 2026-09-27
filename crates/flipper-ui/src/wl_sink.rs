@@ -39,6 +39,8 @@ pub struct WlSink {
     next: usize,
     w: u16,
     h: u16,
+    scale: u16,
+    amber: bool,
 }
 
 struct Buffer {
@@ -102,20 +104,30 @@ impl WlSink {
         let toplevel = xdg.get_toplevel(&qh, ());
         toplevel.set_app_id("net.flipper.flipctl".into());
         toplevel.set_title("FlipCTL".into());
-        // Exactly panel-sized, and say so both ways: on the device the output is
-        // 256x144 anyway, and on a desktop this keeps the window 1:1 rather than
-        // stretching a 256 pixel wide UI across a monitor.
-        toplevel.set_min_size(i32::from(w), i32::from(h));
-        toplevel.set_max_size(i32::from(w), i32::from(h));
+
+        let amber = std::env::var("FLIPCTL_AMBER")
+            .map(|v| v != "0" && v != "false" && v != "no")
+            .unwrap_or(true);
+        let scale: u16 = std::env::var("FLIPCTL_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2)
+            .clamp(1, 8);
+
+        let surf_w = w * scale;
+        let surf_h = h * scale;
+
+        toplevel.set_min_size(i32::from(surf_w), i32::from(surf_h));
+        toplevel.set_max_size(i32::from(surf_w), i32::from(surf_h));
         toplevel.set_fullscreen(None);
         surface.commit();
 
         let mut buffers = Vec::with_capacity(BUFFERS);
         for i in 0..BUFFERS {
-            buffers.push(Buffer::new(&shm, &qh, w, h, i)?);
+            buffers.push(Buffer::new(&shm, &qh, surf_w, surf_h, i)?);
         }
 
-        let mut sink = Self { conn, queue, state, surface, buffers, next: 0, w, h };
+        let mut sink = Self { conn, queue, state, surface, buffers, next: 0, w, h, scale, amber };
         // The first attach has to wait for the first configure, or the compositor
         // is entitled to ignore it.
         for _ in 0..50 {
@@ -171,24 +183,42 @@ impl FrameSink for WlSink {
         let buf = &self.buffers[slot];
         let dst = unsafe { std::slice::from_raw_parts_mut(buf.map, buf.len) };
         let w = usize::from(self.w);
+        let scale = usize::from(self.scale);
+        let surf_w = w * scale;
         for (y, row) in frame.pixels.chunks(w).enumerate() {
-            let base = y * w * 4;
             for (x, &Gray8(v)) in row.iter().enumerate() {
-                let p = base + x * 4;
-                dst[p] = v;
-                dst[p + 1] = v;
-                dst[p + 2] = v;
-                dst[p + 3] = 0xFF;
+                let (r, g, b) = if self.amber {
+                    // Flipper Amber backlight (#FF8200):
+                    (
+                        v,
+                        ((v as u32 * 130) / 255) as u8,
+                        0u8,
+                    )
+                } else {
+                    (v, v, v)
+                };
+                for sy in 0..scale {
+                    let py = y * scale + sy;
+                    let line_base = py * surf_w * 4;
+                    for sx in 0..scale {
+                        let px = x * scale + sx;
+                        let p = line_base + px * 4;
+                        dst[p] = b;
+                        dst[p + 1] = g;
+                        dst[p + 2] = r;
+                        dst[p + 3] = 0xFF;
+                    }
+                }
             }
         }
 
         self.state.busy[slot] = true;
         self.surface.attach(Some(&buf.buffer), 0, 0);
         self.surface.damage_buffer(
-            i32::from(damage.x),
-            i32::from(damage.y),
-            i32::from(damage.w),
-            i32::from(damage.h),
+            i32::from(damage.x) * i32::from(self.scale),
+            i32::from(damage.y) * i32::from(self.scale),
+            i32::from(damage.w) * i32::from(self.scale),
+            i32::from(damage.h) * i32::from(self.scale),
         );
         self.surface.commit();
         self.conn.flush().map_err(io::Error::other)?;
