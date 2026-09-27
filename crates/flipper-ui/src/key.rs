@@ -35,6 +35,7 @@ pub enum FlipperKey {
 
 /// Linux keycodes, from `flipper-one-input.c`.
 mod code {
+    pub const KEY_ESC: u16 = 1;
     pub const KEY_UP: u16 = 103;
     pub const KEY_DOWN: u16 = 108;
     pub const KEY_LEFT: u16 = 105;
@@ -83,7 +84,7 @@ impl FlipperKey {
             code::KEY_LEFT => Self::Left,
             code::KEY_RIGHT => Self::Right,
             code::KEY_ENTER => Self::Ok,
-            code::KEY_BACKSPACE => Self::Back,
+            code::KEY_ESC | code::KEY_BACKSPACE => Self::Back,
             code::KEY_TAB => Self::AppSwitch,
             code::KEY_A => Self::Ptt,
             code::KEY_Z => Self::Escape,

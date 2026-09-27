@@ -189,11 +189,7 @@ impl FrameSink for WlSink {
             for (x, &Gray8(v)) in row.iter().enumerate() {
                 let (r, g, b) = if self.amber {
                     // Flipper Amber backlight (#FF8200):
-                    (
-                        v,
-                        ((v as u32 * 130) / 255) as u8,
-                        0u8,
-                    )
+                    (v, ((v as u32 * 130) / 255) as u8, 0u8)
                 } else {
                     (v, v, v)
                 };

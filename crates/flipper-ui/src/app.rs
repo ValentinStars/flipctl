@@ -464,13 +464,15 @@ pub fn which_bin(name: &str) -> Option<PathBuf> {
 pub fn detect_package_manager() -> PackageManager {
     let has_pacman = which_bin("pacman").is_some();
     let has_apt = which_bin("apt-get").is_some();
-    let is_arch = Path::new("/etc/arch-release").exists() || Path::new("/etc/manjaro-release").exists();
+    let is_arch =
+        Path::new("/etc/arch-release").exists() || Path::new("/etc/manjaro-release").exists();
 
     if is_arch && has_pacman {
         return PackageManager::Pacman;
     }
     // Check if dpkg status is a real, non-empty database
-    let valid_dpkg = std::fs::metadata("/var/lib/dpkg/status").map(|m| m.len() > 100).unwrap_or(false);
+    let valid_dpkg =
+        std::fs::metadata("/var/lib/dpkg/status").map(|m| m.len() > 100).unwrap_or(false);
     if valid_dpkg && (has_apt || which_bin("dpkg-query").is_some()) {
         return PackageManager::Apt;
     }
@@ -720,12 +722,8 @@ pub fn missing(entry: &AppEntry) -> Missing {
         return Missing::default();
     }
     // Fast path: check if package binary is already installed in PATH
-    let to_check: Vec<String> = entry
-        .apt
-        .iter()
-        .filter(|p| !is_pkg_command_present(p))
-        .cloned()
-        .collect();
+    let to_check: Vec<String> =
+        entry.apt.iter().filter(|p| !is_pkg_command_present(p)).cloned().collect();
     if to_check.is_empty() {
         return Missing::default();
     }
@@ -753,11 +751,8 @@ pub fn install(missing: &Missing, mut log: impl FnMut(String)) -> Result<(), Str
     match pm {
         PackageManager::Pacman => {
             log("pacman database check".into());
-            let mapped_pkgs: Vec<String> = missing
-                .apt
-                .iter()
-                .map(|p| debian_to_pacman_pkg(p).to_string())
-                .collect();
+            let mapped_pkgs: Vec<String> =
+                missing.apt.iter().map(|p| debian_to_pacman_pkg(p).to_string()).collect();
             log(format!("pacman: {}", mapped_pkgs.join(" ")));
             run_logged(
                 Command::new("sudo")
@@ -786,9 +781,7 @@ pub fn install(missing: &Missing, mut log: impl FnMut(String)) -> Result<(), Str
         PackageManager::Dnf => {
             log(format!("dnf: {}", missing.apt.join(" ")));
             run_logged(
-                Command::new("sudo")
-                    .args(["dnf", "install", "-y"])
-                    .args(&missing.apt),
+                Command::new("sudo").args(["dnf", "install", "-y"]).args(&missing.apt),
                 &mut log,
             )?;
         }

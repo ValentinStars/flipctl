@@ -2702,11 +2702,8 @@ fn png(
     let amber = std::env::var("FLIPCTL_AMBER")
         .map(|v| v != "0" && v != "false" && v != "no")
         .unwrap_or(true);
-    let scale: u32 = std::env::var("FLIPCTL_SCALE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2)
-        .clamp(1, 8);
+    let scale: u32 =
+        std::env::var("FLIPCTL_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(2).clamp(1, 8);
 
     let file = std::fs::File::create(path)?;
     let out_w = u32::from(PANEL_W) * scale;
@@ -4247,7 +4244,7 @@ fn panel(
                     eprintln!("key            {:?} down={} to {front}", event.key, event.down);
                 }
                 match event.key {
-                    FlipperKey::Back | FlipperKey::Escape | FlipperKey::AppSwitch => {
+                    FlipperKey::Back | FlipperKey::AppSwitch => {
                         if event.down {
                             leave = Some(event.key == FlipperKey::AppSwitch);
                         }
