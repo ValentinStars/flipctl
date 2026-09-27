@@ -36,8 +36,10 @@
      pixel by the blitter. A mix-blend-mode layer here forced the browser to
      re-blend and recomposite this stack, photo included, on every frame. */
   #panel {
-    position: absolute; z-index: 1;
+    position: absolute; z-index: 4;
     image-rendering: pixelated;
+    pointer-events: auto;
+    cursor: pointer;
   }
   #photo {
     position: relative; z-index: 2; display: block;
@@ -146,6 +148,7 @@ for (const z of ZONES) {
   wrap.appendChild(el);
 }
 flipperWireInput('.zone');
+flipperWireScreen(panel);
 
 document.getElementById('toggle').addEventListener('change', e => {
   document.body.classList.toggle('show', e.target.checked);

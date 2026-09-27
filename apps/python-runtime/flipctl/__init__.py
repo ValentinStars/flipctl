@@ -59,7 +59,24 @@ def ui_dir() -> pathlib.Path:
     The launcher sets `FLIPCTL_UI` to its own copy; the fallback is where an image
     that ships the sources would put them, so a script run by hand still finds them.
     """
-    return pathlib.Path(os.environ.get("FLIPCTL_UI", "/usr/share/flipctl/ui"))
+    env = os.environ.get("FLIPCTL_UI")
+    if env and pathlib.Path(env).exists():
+        return pathlib.Path(env)
+    for parent in pathlib.Path(__file__).resolve().parents:
+        if (parent / "crates/flipper-ui/ui").exists():
+            return parent
+    local_ui = pathlib.Path.home() / ".local/share/flipctl/ui"
+    if (local_ui / "crates/flipper-ui/ui").exists() or (local_ui / "theme.slint").exists():
+        return local_ui
+    for candidate in [
+        pathlib.Path.home() / "flipctl_research/flipctl-slint",
+        pathlib.Path.home() / "flipctl",
+        pathlib.Path("/usr/share/flipctl/ui"),
+        pathlib.Path("/usr/share/flipctl"),
+    ]:
+        if (candidate / "crates/flipper-ui/ui").exists():
+            return candidate
+    return pathlib.Path.home() / ".local/share/flipctl"
 
 
 _TOKENS: dict[str, float] = {}
@@ -74,7 +91,10 @@ def theme(name: str, default: float = 0) -> float:
     """
     if not _TOKENS:
         try:
-            text = (ui_dir() / "theme.slint").read_text()
+            theme_file = ui_dir() / "theme.slint"
+            if not theme_file.exists():
+                theme_file = ui_dir() / "crates/flipper-ui/ui/theme.slint"
+            text = theme_file.read_text()
         except OSError:
             text = ""
         for key, value in re.findall(
@@ -140,10 +160,16 @@ def wrap(text: str, width: float = 0) -> list[str]:
 
 def _libraries() -> dict[str, pathlib.Path]:
     ui = ui_dir()
+    flipctl_dir = ui / "crates/flipper-ui/ui" if (ui / "crates/flipper-ui/ui").exists() else ui
+    app_dir = ui / "crates/flipctl-app/ui" if (ui / "crates/flipctl-app/ui").exists() else ui
+    theme_file = ui / "theme.slint"
+    if not theme_file.exists():
+        if (ui / "crates/flipper-ui/ui/theme.slint").exists():
+            theme_file = ui / "crates/flipper-ui/ui/theme.slint"
     return {
-        "flipctl": ui / "crates/flipper-ui/ui",
-        "app": ui / "crates/flipctl-app/ui",
-        "theme": ui / "theme.slint",
+        "flipctl": flipctl_dir,
+        "app": app_dir,
+        "theme": theme_file,
     }
 
 

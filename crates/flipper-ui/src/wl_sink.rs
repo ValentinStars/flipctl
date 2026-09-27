@@ -17,7 +17,8 @@ use std::io;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface,
 };
 use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -63,6 +64,10 @@ struct State {
     // arrives that many times: one Down moves the selection twice, or acts on the
     // screen just left as well as the one arrived at.
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+    pointer_pos: (f64, f64),
+    active_ptr_key: Option<FlipperKey>,
+    scale: u16,
     busy: [bool; BUFFERS],
     keys: VecDeque<KeyEvent>,
 }
@@ -359,13 +364,78 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(caps) } = event {
-            let has = caps.contains(wl_seat::Capability::Keyboard);
-            match (has, state.keyboard.take()) {
+            let has_kb = caps.contains(wl_seat::Capability::Keyboard);
+            match (has_kb, state.keyboard.take()) {
                 (true, None) => state.keyboard = Some(seat.get_keyboard(qh, ())),
                 (true, Some(k)) => state.keyboard = Some(k),
                 (false, Some(k)) => k.release(),
                 (false, None) => {}
             }
+            let has_ptr = caps.contains(wl_seat::Capability::Pointer);
+            match (has_ptr, state.pointer.take()) {
+                (true, None) => state.pointer = Some(seat.get_pointer(qh, ())),
+                (true, Some(p)) => state.pointer = Some(p),
+                (false, Some(p)) => p.release(),
+                (false, None) => {}
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter { surface_x, surface_y, .. }
+            | wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                state.pointer_pos = (surface_x, surface_y);
+            }
+            wl_pointer::Event::Button { state: s, .. } => {
+                let down = matches!(s, WEnum::Value(wl_pointer::ButtonState::Pressed));
+                if down {
+                    let scale = state.scale.max(1) as f64;
+                    let x = (state.pointer_pos.0 / scale) as i32;
+                    let y = (state.pointer_pos.1 / scale) as i32;
+                    let key = if y >= 124 {
+                        let slot = (x / (i32::from(crate::PANEL_W) / 5)).clamp(0, 4);
+                        [
+                            FlipperKey::Escape,
+                            FlipperKey::View,
+                            FlipperKey::Power,
+                            FlipperKey::Edit,
+                            FlipperKey::Run,
+                        ][slot as usize]
+                    } else if y < 22 {
+                        FlipperKey::Back
+                    } else if x < 48 {
+                        FlipperKey::Left
+                    } else if x > 208 {
+                        FlipperKey::Right
+                    } else if y < 65 {
+                        FlipperKey::Up
+                    } else if y > 90 {
+                        FlipperKey::Down
+                    } else {
+                        FlipperKey::Ok
+                    };
+                    state.active_ptr_key = Some(key);
+                    state.keys.push_back(KeyEvent { key, down: true });
+                } else if let Some(key) = state.active_ptr_key.take() {
+                    state.keys.push_back(KeyEvent { key, down: false });
+                }
+            }
+            wl_pointer::Event::Leave { .. } => {
+                if let Some(key) = state.active_ptr_key.take() {
+                    state.keys.push_back(KeyEvent { key, down: false });
+                }
+            }
+            _ => {}
         }
     }
 }

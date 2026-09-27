@@ -125,9 +125,60 @@ function flipperSend(key, down) {
 /// the real key, plus the keyboard equivalents.
 const FLIPPER_KEYS = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-  Enter: 'ok', Escape: 'back', Backspace: 'back', Tab: 'appsw',
-  z: 'esc', x: 'view', c: 'power', v: 'edit', b: 'run', a: 'ptt',
+  w: 'up', s: 'down', a: 'ptt', d: 'right',
+  Enter: 'ok', ' ': 'ok', Escape: 'back', Backspace: 'back', Tab: 'appsw',
+  z: 'esc', x: 'view', c: 'power', v: 'edit', b: 'run',
+  '1': 'esc', '2': 'view', '3': 'power', '4': 'edit', '5': 'run',
 };
+
+function flipperWireScreen(canvas) {
+  if (!canvas) return;
+  canvas.style.pointerEvents = 'auto';
+  canvas.style.cursor = 'pointer';
+  canvas.style.touchAction = 'none';
+
+  let currentKey = null;
+
+  function pointToKey(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width * 256;
+    const y = (e.clientY - rect.top) / rect.height * 144;
+
+    // Bottom soft buttons bar (y >= 124)
+    if (y >= 124) {
+      const slot = Math.floor(x / (256 / 5));
+      const softKeys = ['esc', 'view', 'power', 'edit', 'run'];
+      return softKeys[Math.min(4, Math.max(0, slot))];
+    }
+    // Top status / back bar
+    if (y < 22) {
+      return 'back';
+    }
+    // Screen body navigation
+    if (x < 48) return 'left';
+    if (x > 208) return 'right';
+    if (y < 65) return 'up';
+    if (y > 90) return 'down';
+    return 'ok';
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    currentKey = pointToKey(e);
+    if (currentKey) flipperSend(currentKey, true);
+  });
+
+  const release = () => {
+    if (currentKey) {
+      flipperSend(currentKey, false);
+      currentKey = null;
+    }
+  };
+
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+  canvas.addEventListener('pointerleave', release);
+}
 
 function flipperWireInput(selector) {
   const held = key =>
