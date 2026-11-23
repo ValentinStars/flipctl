@@ -19,7 +19,7 @@ if [[ "${1:-}" == build ]]; then
             *) app_target="$PWD/target" ;;
         esac
         cargo build --locked --manifest-path "apps/$app/Cargo.toml" --target-dir "$app_target"
-        if [[ "$app_target" != "$app_dir" ]]; then
+        if [[ "$app_target" != "$app_dir" && ! "$app_target/debug/$app-app" -ef "$app_dir/debug/$app-app" ]]; then
             ln -f -- "$app_target/debug/$app-app" "$app_dir/debug/$app-app"
         fi
     done
