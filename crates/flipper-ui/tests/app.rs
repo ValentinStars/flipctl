@@ -36,7 +36,7 @@ fn sandbox() -> PathBuf {
 
 /// A fresh Apps folder for one test.
 fn apps_folder(name: &str) -> PathBuf {
-    let dir = sandbox().join(name);
+    let dir = sandbox().join("fixtures").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     dir
