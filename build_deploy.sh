@@ -17,6 +17,9 @@
 #   ./build_deploy.sh --cross         build here for aarch64 in docker, not on the device
 #   ./build_deploy.sh --apps          also push target/appimage/*.AppImage to ~/Apps
 #                                     (on its own: push them and build nothing)
+#   ./build_deploy.sh --app NAME      push only NAME, as --apps would: a bundle by its
+#                                     directory under apps/, a script by its path there
+#                                     ("Network/ping.fap.py"). Repeatable
 #   ./build_deploy.sh --no-run        build only, install nothing, restart nothing
 #   ./build_deploy.sh --status        report what is running, change nothing
 #
@@ -28,7 +31,7 @@
 # and this is for the builds that hurt.
 #
 # Environment:
-#   FLIPPER_HOST  default 192.168.1.110
+#   FLIPPER_HOST  required: the device's address changes with the booted profile
 #   FLIPPER_USER  default user
 #   FLIPPER_PASS  default user; unset it to use key auth instead
 #   REMOTE_PORT   default 8899
@@ -36,7 +39,7 @@
 #                 prototype that used to hold it is gone; set host:port to compare
 set -euo pipefail
 
-HOST="${FLIPPER_HOST:-192.168.1.110}"
+HOST="${FLIPPER_HOST-}"
 USER_="${FLIPPER_USER:-user}"
 PASS="${FLIPPER_PASS-user}"
 PORT="${REMOTE_PORT:-8899}"
@@ -70,18 +73,29 @@ APPS=no
 # --apps falls into the device build below, which is minutes of compiling for a file
 # copy nobody asked to compile for.
 BUILD=no
-for arg in "$@"; do
-    case "$arg" in
+# The apps --app named; empty pushes them all.
+ONLY=()
+while [ $# -gt 0 ]; do
+    case "$1" in
         --panel)   MODE=panel; BUILD=yes ;;
         --headless) MODE=headless; BUILD=yes ;;
         --cross)   CROSS=yes; BUILD=yes ;;
         --apps)    APPS=yes ;;
+        --app)
+            [ $# -ge 2 ] || { echo "--app needs a name" >&2; exit 2; }
+            APPS=yes; ONLY+=("$2"); shift ;;
+        --app=*)   APPS=yes; ONLY+=("${1#--app=}") ;;
         --no-run)  RUN=no; BUILD=yes ;;
         --status)  MODE=status ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
-        *) echo "unknown option: $arg" >&2; exit 2 ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
+    shift
 done
+if [ -z "$HOST" ]; then
+    echo "set FLIPPER_HOST to the device address" >&2
+    exit 2
+fi
 
 # Password auth only if sshpass is present and FLIPPER_PASS is set; otherwise
 # plain ssh, which picks up keys.
@@ -119,14 +133,24 @@ push_apps() {
     here=$(cd "$(dirname "$0")" && pwd)
     found=no
     local id folder rel
+    # What --app named and was found, to refuse a name that matched nothing.
+    local pushed=()
+    wanted() {
+        local n
+        [ ${#ONLY[@]} -eq 0 ] && return 0
+        for n in "${ONLY[@]}"; do [ "$n" = "$1" ] && return 0; done
+        return 1
+    }
     for app in "$here"/target/appimage/*.AppImage; do
         [ -e "$app" ] || continue
-        found=yes
         name=$(basename "$app")
+        id=${name%-aarch64.fap.AppImage}
+        wanted "$id" || continue
+        found=yes
+        pushed+=("$id")
         # An app may say which folder of the Apps list it belongs in, which is how the
         # runtimes stay out of the top level. Read from the source manifest, because
         # the bundle carries only the keys flipctl itself reads.
-        id=${name%-aarch64.fap.AppImage}
         folder=$(sed -n 's/^folder *= *"\(.*\)"/\1/p' "$here/apps/$id/app.toml" 2>/dev/null | head -1)
         rel=$name
         [ -n "$folder" ] && rel="$folder/$name"
@@ -141,7 +165,8 @@ push_apps() {
     local scripts
     # Found the way flipctl finds them: the block in the head makes a file an app,
     # whatever its extension, so a new language needs nothing here.
-    scripts=$(cd "$here/apps" && find . -type f -not -path "*/__pycache__/*" \
+    # A bundle's build tree is tens of thousands of files and never holds an app.
+    scripts=$(cd "$here/apps" && find . -name target -prune -o -type f -not -path "*/__pycache__/*" -print \
         | while IFS= read -r f; do
             # A bundle's own sources are not script apps, and its manifest can be any
             # number of directories above the file: python-runtime/flipctl/*.py is
@@ -153,17 +178,25 @@ push_apps() {
             # A folder may carry an icon.png for its own row, which has no block to
             # find it by: named rather than sniffed, so nothing else in a folder is
             # swept along.
-            if [ "$d" = "." ] && { [ "$(basename "$f")" = icon.png ] \
+            if [ "$d" = "." ] && wanted "${f#./}" && { [ "$(basename "$f")" = icon.png ] \
                     || head -c 8192 "$f" | grep -q "/// flipctl"; }; then
                 printf '%s\n' "$f"
             fi
         done)
     if [ -n "$scripts" ]; then
+        while IFS= read -r f; do pushed+=("${f#./}"); done <<< "$scripts"
         found=yes
         printf '%s\n' "$scripts" | sed 's|^\./|== pushing |;s|$| to ~/Apps ==|'
         printf '%s\n' "$scripts" | tar czf - -C "$here/apps" -T - \
             | run "mkdir -p ~/Apps && tar xzf - -C ~/Apps"
     fi
+    local n p missing=no
+    for n in "${ONLY[@]}"; do
+        for p in "${pushed[@]}"; do [ "$p" = "$n" ] && continue 2; done
+        echo "--app $n: no such bundle in target/appimage or script under apps/" >&2
+        missing=yes
+    done
+    [ "$missing" = no ] || exit 1
     if [ "$found" = no ]; then
         echo "--apps: nothing under target/appimage; run tools/appimage/build.sh first" >&2
     fi
@@ -204,6 +237,15 @@ tar czf - \
 # Where the binary to install ends up, which is what --cross changes.
 BUILT="~/$DEST/target/release/flipctl"
 
+# The commit Settings > System info names, worked out here because the copy above has
+# no .git. Marked dirty when tracked files differ from it, since what runs is then not
+# quite that commit.
+TREE=$(cd "$(dirname "$0")" && pwd)
+COMMIT=$(git -C "$TREE" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+if [ -n "$(git -C "$TREE" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    COMMIT="$COMMIT-dirty"
+fi
+
 if [ "$CROSS" = yes ]; then
     command -v docker >/dev/null || { echo "--cross needs docker" >&2; exit 2; }
     echo "== cross-building here for aarch64 =="
@@ -238,6 +280,7 @@ if [ "$CROSS" = yes ]; then
         -v "$XT:/target" -e CARGO_TARGET_DIR=/target \
         -v "$XT/home:/cargo" -e CARGO_HOME=/cargo \
         -e CARGO_PROFILE_RELEASE_LTO=false -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+        -e FLIPCTL_COMMIT="$COMMIT" \
         flipctl-cross \
         cargo build --release --target aarch64-unknown-linux-gnu \
             -p flipctl --features device,slint,remote,wayland,gpu
@@ -264,7 +307,8 @@ echo "== building on the device =="
 started=$SECONDS
 set +e
 run "cd ~/$DEST && export PATH=\$HOME/.cargo/bin:\$PATH \
-        CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 && \
+        CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+        FLIPCTL_COMMIT=$COMMIT && \
      cargo build --release -p flipctl --features device,slint,remote,wayland,gpu 2>&1" \
   | awk '
         { sub(/^[ \t]+/, "") }
@@ -288,7 +332,7 @@ if [ "$RUN" = no ]; then
     exit 0
 fi
 
-ARGS="--remote 0.0.0.0:$PORT --assets $SHARE/assets/remote"
+ARGS="--remote [::]:$PORT --assets $SHARE/assets/remote"
 [ -n "$PEER" ] && ARGS="$ARGS --peer $PEER"
 if [ "$MODE" = panel ]; then
     # The panel is single-owner. cog holds card0 and has to let go first, and the
@@ -350,6 +394,12 @@ run "sudo tee /etc/udev/rules.d/70-flipctl-devices.rules >/dev/null && \
 run "sudo tee /etc/modules-load.d/flipctl-devices.conf >/dev/null && \
      sudo systemctl restart systemd-modules-load.service" \
     < "$SYSD/flipctl-devices.conf"
+# WirePlumber reads its rules when it starts, so it is restarted when this one changes
+run "f=/etc/wireplumber/wireplumber.conf.d/60-flipctl-uac2.conf; new=\$(cat); \
+     if [ \"\$new\" != \"\$(cat \"\$f\" 2>/dev/null)\" ]; then sudo mkdir -p \"\${f%/*}\" && \
+     printf '%s\n' \"\$new\" | sudo tee \"\$f\" >/dev/null && \
+     XDG_RUNTIME_DIR=/run/user/\$(id -u) systemctl --user try-restart wireplumber; fi" \
+    < "$SYSD/60-flipctl-uac2.conf"
 
 # The unit itself, where the machine has none. Stock profiles do not ship it -- it has
 # always been installed by hand -- so a deploy onto a freshly installed profile otherwise

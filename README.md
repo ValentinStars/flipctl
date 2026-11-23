@@ -56,12 +56,14 @@ The upstream project is tightly coupled to Flipper One engineering hardware (All
 git clone https://github.com/ValentinStars/flipctl.git
 cd flipctl
 
-# Install sample apps to ~/Apps
-bash sample_apps/install_apps.sh
-
 # Run FlipCTL on Wayland, with a local browser view at http://127.0.0.1:8899
 ./start.sh
 ```
+
+A source launch discovers the repository's scripts and sample apps along with
+`~/Apps`. With the Slint Python binding installed for `python3`, it also
+registers the source Python runtime and uses the exact theme of the current
+FlipCTL binary. Open a script from Apps to run it on the same display.
 
 Without Wayland, `./start.sh` serves the browser view at `http://127.0.0.1:8899`.
 Use `./start.sh lan` to listen on all interfaces and `./start.sh panel` for the
@@ -146,6 +148,17 @@ ExecStart=/usr/bin/python3 /path/to/waveshare_st7735.py --host 192.168.1.50 --po
 | **D-Pad Right** | `Right Arrow` | Joy Right | Next item / Right |
 
 ---
+
+## Deploying to Flipper One
+
+Set `FLIPPER_HOST` to the device address. Build the app bundles first if you want
+to deploy them alongside the shell. See [app packaging](docs/apps.md).
+
+```bash
+./build_deploy.sh --panel
+./build_deploy.sh --panel --apps
+./build_deploy.sh --app NAME
+```
 
 ## Syncing with Upstream
 

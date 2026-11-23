@@ -41,6 +41,24 @@ if [[ "$mode" == auto ]]; then
     fi
 fi
 
+if [[ "$mode" != panel ]]; then
+    export FLIPCTL_SOURCE_ROOT="$PWD"
+    if python3 -c 'import slint' 2>/dev/null; then
+        theme_cache="${XDG_CACHE_HOME:-$HOME/.cache}/flipctl/source-ui"
+        mkdir -p "$theme_cache"
+        theme_stage=$(mktemp "$theme_cache/.theme.XXXXXX")
+        if "$binary" --print-theme > "$theme_stage" && [[ -s "$theme_stage" ]]; then
+            theme_digest=$(sha256sum -- "$theme_stage")
+            export FLIPCTL_THEME="$theme_cache/${theme_digest%% *}.slint"
+            mv -f -- "$theme_stage" "$FLIPCTL_THEME"
+            export FLIPCTL_UI="$PWD"
+            export FLIPCTL_SOURCE_PYTHON="$PWD/apps/python-runtime/AppRun"
+        else
+            rm -f -- "$theme_stage"
+        fi
+    fi
+fi
+
 case "$mode" in
     gui) exec "$binary" --wayland --remote "${FLIPCTL_ADDRESS:-127.0.0.1:8899}" "$@" ;;
     panel) exec "$binary" --panel "$@" ;;

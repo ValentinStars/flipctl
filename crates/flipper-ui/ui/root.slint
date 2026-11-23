@@ -7,7 +7,7 @@
 // is also the shape a scene stack needs later.
 import { FlipperTheme } from "@theme";
 import { MenuBody, ListItem } from "list.slint";
-import { IdleBody, IdleLink } from "idle.slint";
+import { IdleBody, IdleLine } from "idle.slint";
 import { LogBody } from "log.slint";
 import { Modal } from "modal.slint";
 import { DetailBody, DetailRow } from "detail.slint";
@@ -17,8 +17,9 @@ import { BootBody, BootRow, BootPopupRow } from "boot.slint";
 import { TextInputBody, KbCell } from "keyboard.slint";
 import { SwitcherBody, SwitchCard } from "switcher.slint";
 import { CardsBody, CardItem } from "card.slint";
+import { ChoicePopup, ChoiceView, ChoiceRow, ChoiceLine } from "choice.slint";
 
-export { ListItem, IdleLink, DetailRow, EthLink, EthDetailRow, WifiRow, WifiNetRow, WifiDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard, CardItem }
+export { ListItem, IdleLine, DetailRow, EthLink, EthDetailRow, WifiRow, WifiNetRow, WifiDetailRow, BootRow, BootPopupRow, KbCell, SwitchCard, CardItem, ChoiceView, ChoiceRow, ChoiceLine }
 
 // Idle is the root. The menu opens over it and the app list over that. There are no
 // screens for an app to be shown on: an app draws its own, and what flipctl puts up
@@ -53,11 +54,11 @@ export component Root inherits Window {
     in property <string> hostname;
     in property <string> profile;
     in property <bool> has_profile: true;
-    in property <[IdleLink]> links;
-    in property <int> link_scroll;
-    // How many interface cards the idle screen has room for, so the keys that scroll
-    // them can clamp against the geometry rather than a guess.
-    out property <int> link_rows: idle.link_rows;
+    in property <[IdleLine]> links;
+    in property <length> link_offset;
+    // How much room the idle screen's address list has, so the keys that scroll it
+    // can clamp against the geometry rather than a guess.
+    out property <length> links_h: idle.links_h;
     in property <[string]> idle_buttons;
     in property <int> idle_pressed_slot: -1;
 
@@ -103,8 +104,11 @@ export component Root inherits Window {
 
     // Detail screens behind Settings and Network.
     in property <[DetailRow]> detail_rows;
+    in property <[string]> detail_asides;
     in property <int> detail_offset;
     in property <[string]> detail_buttons;
+    // A detail page as a QR code, drawn over its rows while set. Empty otherwise.
+    in property <image> detail_qr;
     in property <int> detail_pressed_slot: -1;
     // Whether the chevron row's value is at either end of its range, so that chevron
     // is not drawn. One pair for the screen: a detail screen has at most one such row.
@@ -170,12 +174,16 @@ export component Root inherits Window {
     in property <length> boot_popup_icon_h;
     in property <string> boot_popup_size_number;
     in property <string> boot_popup_size_unit;
+    in property <bool> boot_popup_show_size: true;
     in property <length> boot_popup_size_slot_w;
     in property <[BootPopupRow]> boot_popup_rows;
     in property <[string]> boot_popup_message;
     in property <string> boot_popup_hint;
     in property <length> boot_popup_w;
     in property <length> boot_popup_body_h;
+    in property <int> boot_popup_scroll_total;
+    in property <int> boot_popup_scroll_visible;
+    in property <int> boot_popup_scroll_offset;
 
     // The text-input screen: a field and the on-screen keyboard.
     in property <string> kb_title;
@@ -185,6 +193,7 @@ export component Root inherits Window {
     in property <bool> kb_cursor_on;
     in property <bool> kb_field_focused;
     in property <string> kb_warning;
+    in property <string> kb_warning2;
     in property <[KbCell]> kb_cells;
     in property <length> kb_chrome_x;
     in property <length> kb_chrome_y;
@@ -211,6 +220,16 @@ export component Root inherits Window {
     in property <string> modal_right;
     in property <int> modal_pressed_slot: -1;
 
+    // A question asked of whoever is holding the device, over anything at all: the
+    // switcher, a dialog, a hosted app. `choice_backdrop` is that app's last frame.
+    in property <bool> choice_open;
+    in property <ChoiceView> choice_view;
+    in property <[ChoiceRow]> choice_rows;
+    in property <[ChoiceLine]> choice_hints;
+    in property <image> choice_backdrop;
+    in property <bool> choice_has_backdrop;
+    in property <int> choice_pressed_slot: -1;
+
     idle := IdleBody {
         visible: root.screen == Screen.idle;
         battery: root.battery;
@@ -228,7 +247,7 @@ export component Root inherits Window {
         profile: root.profile;
         has_profile: root.has_profile;
         links: root.links;
-        link_scroll: root.link_scroll;
+        link_offset: root.link_offset;
         buttons: root.idle_buttons;
         pressed_slot: root.idle_pressed_slot;
     }
@@ -291,6 +310,7 @@ export component Root inherits Window {
         access_tech: root.access_tech;
         modem_quality: root.modem_quality;
         rows: root.detail_rows;
+        asides: root.detail_asides;
         breadcrumb: root.breadcrumb;
         offset: root.detail_offset;
         arrow_pressed: root.arrow_pressed;
@@ -298,6 +318,34 @@ export component Root inherits Window {
         at_end: root.detail_at_end;
         buttons: root.detail_buttons;
         pressed_slot: root.detail_pressed_slot;
+    }
+
+    // The whole panel, status bar and soft keys included: every row of height is
+    // modules the code can use. One pixel a module, so it is never scaled, centred,
+    // and the white around it is the code's quiet zone.
+    if root.screen == Screen.detail && root.detail_qr.width > 0: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: FlipperTheme.white;
+        qr := Image {
+            source: root.detail_qr;
+            width: root.detail_qr.width * 1px;
+            height: root.detail_qr.height * 1px;
+            x: Math.floor((parent.width - self.width) / 2px) * 1px;
+            y: Math.floor((parent.height - self.height) / 2px) * 1px;
+            image-rendering: pixelated;
+        }
+        // In the square the code leaves white for it.
+        Image {
+            source: @image-url("../assets/icons/system_info.png");
+            width: self.source.width * 1px;
+            height: self.source.height * 1px;
+            x: qr.x + Math.floor((qr.width - self.width) / 2px) * 1px;
+            y: qr.y + Math.floor((qr.height - self.height) / 2px) * 1px;
+            image-rendering: pixelated;
+        }
     }
 
     if root.screen == Screen.ethernet: EthernetBody {
@@ -375,6 +423,7 @@ export component Root inherits Window {
         cursor_on: root.kb_cursor_on;
         field_focused: root.kb_field_focused;
         warning: root.kb_warning;
+        warning2: root.kb_warning2;
         cells: root.kb_cells;
         chrome_x: root.kb_chrome_x;
         chrome_y: root.kb_chrome_y;
@@ -397,6 +446,7 @@ export component Root inherits Window {
     }
 
     if root.screen == Screen.boot: BootBody {
+        heading: "OS Profiles";
         rows: root.boot_rows;
         selected: root.boot_selected;
         scroll: root.boot_scroll;
@@ -415,12 +465,16 @@ export component Root inherits Window {
         popup_icon_h: root.boot_popup_icon_h;
         popup_size_number: root.boot_popup_size_number;
         popup_size_unit: root.boot_popup_size_unit;
+        popup_show_size: root.boot_popup_show_size;
         popup_size_slot_w: root.boot_popup_size_slot_w;
         popup_rows: root.boot_popup_rows;
         popup_message: root.boot_popup_message;
         popup_hint: root.boot_popup_hint;
         popup_w: root.boot_popup_w;
         popup_body_h: root.boot_popup_body_h;
+        popup_scroll_total: root.boot_popup_scroll_total;
+        popup_scroll_visible: root.boot_popup_scroll_visible;
+        popup_scroll_offset: root.boot_popup_scroll_offset;
     }
 
     if root.screen == Screen.menu: MenuBody {
@@ -473,5 +527,15 @@ export component Root inherits Window {
         source-clip-y: root.app_spin * (FlipperTheme.spin_h / 1px);
         source-clip-width: FlipperTheme.spin_w / 1px;
         source-clip-height: FlipperTheme.spin_h / 1px;
+    }
+
+    // Last, so nothing draws over it, the app-start spinner included.
+    if root.choice_open: ChoicePopup {
+        view: root.choice_view;
+        rows: root.choice_rows;
+        hints: root.choice_hints;
+        backdrop: root.choice_backdrop;
+        has_backdrop: root.choice_has_backdrop;
+        pressed_slot: root.choice_pressed_slot;
     }
 }

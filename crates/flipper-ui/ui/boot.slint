@@ -12,7 +12,7 @@
 //     Born2bSportyV2 when selected, because the shift in baseline reads as the row
 //     jumping, and here the rows are close enough together to notice.
 import { FlipperTheme } from "@theme";
-import { SelectorFrame, SoftBar } from "frame.slint";
+import { SelectorFrame, SoftBar, Scrollbar } from "frame.slint";
 
 export struct BootRow {
     label: string,
@@ -132,6 +132,10 @@ export struct BootPopupRow {
     // The auto-start heart, to the left of an action. Marks the enabled state, so
     // it shows only when this profile is already the marked one.
     heart: bool,
+    // The value is at the first or the last of its range, which drops that chevron
+    // and leaves the value where it is.
+    at_start: bool,
+    at_end: bool,
 }
 
 // The Info and Edit popups, which share their chrome.
@@ -154,6 +158,8 @@ component BootPopup inherits Rectangle {
     // Already formatted as the number and its unit, or the spinner frame.
     in property <string> size_number;
     in property <string> size_unit;
+    // False drops the size line, and the band shrinks to the name.
+    in property <bool> show_size: true;
     in property <[BootPopupRow]> rows;
     // Shown instead of the rows: a confirmation, progress, or what happened.
     in property <[string]> message;
@@ -164,11 +170,19 @@ component BootPopup inherits Rectangle {
     // How tall the rows come to, for the same reason: rows of two pitches cannot be
     // counted, only added up.
     in property <length> body_h_in;
+    // Rows in all, how many are shown, and the first shown, when they do not all fit.
+    // The caller gives only the rows that are shown.
+    in property <int> scroll_total;
+    in property <int> scroll_visible;
+    in property <int> scroll_offset;
 
     width: 100%;
     height: 100%;
     background: FlipperTheme.white.with-alpha(FlipperTheme.overlay_alpha);
 
+    property <bool> needs_scroll: root.scroll_total > root.scroll_visible;
+
+    property <length> hdr_h: root.show_size ? FlipperTheme.popup_hdr_h : FlipperTheme.popup_hdr_bare_h;
     property <bool> has_message: root.message.length > 0;
     property <length> line_h: root.has_message
         ? FlipperTheme.popup_line_h
@@ -179,7 +193,7 @@ component BootPopup inherits Rectangle {
     property <length> body_h: root.has_message
         ? root.body_lines * root.line_h
         : root.body_h_in;
-    property <length> frame_h: FlipperTheme.popup_hdr_h + root.body_h + 8px;
+    property <length> frame_h: root.hdr_h + root.body_h + 2 * FlipperTheme.popup_body_pad;
     property <length> frame_w: Math.min(
         FlipperTheme.popup_max_w / 1px,
         Math.max(root.frame_w_in / 1px, 80)
@@ -209,7 +223,7 @@ component BootPopup inherits Rectangle {
         x: root.frame_x;
         y: root.frame_y;
         width: root.frame_w;
-        height: FlipperTheme.popup_hdr_h;
+        height: root.hdr_h;
         background: transparent;
 
         for by in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
@@ -218,6 +232,7 @@ component BootPopup inherits Rectangle {
             property <int> off: by < FlipperTheme.popup / 1px
                 ? FlipperTheme.popup / 1px - by
                 : 1;
+            visible: by < root.hdr_h / 1px;
             x: self.off * 1px;
             y: by * 1px;
             width: root.frame_w - 2 * self.off * 1px;
@@ -285,14 +300,14 @@ component BootPopup inherits Rectangle {
     property <length> size_x: root.frame_x
         + Math.floor((root.frame_w - root.size_w) / 2 / 1px) * 1px;
 
-    Text {
+    if root.show_size: Text {
         x: root.size_x;
         y: root.frame_y + FlipperTheme.popup_size_y;
         text: "Size:";
         font-size: 16px;
         color: FlipperTheme.keycap_dim;
     }
-    Text {
+    if root.show_size: Text {
         // Right-aligned in the slot, so a narrower frame does not drag the label.
         x: root.size_x + (size_label.width - 1px) + FlipperTheme.size_gap
             + root.slot - (self.width - 1px);
@@ -301,7 +316,7 @@ component BootPopup inherits Rectangle {
         font-size: 16px;
         color: FlipperTheme.keycap_dim;
     }
-    if root.size_unit != "": Text {
+    if root.show_size && root.size_unit != "": Text {
         x: root.size_x + (size_label.width - 1px) + FlipperTheme.size_gap
             + root.slot + FlipperTheme.size_gap;
         y: root.frame_y + FlipperTheme.popup_size_y;
@@ -313,14 +328,14 @@ component BootPopup inherits Rectangle {
     // A message takes the body: its lines centred, then the button under them.
     for line[i] in root.message: Text {
         x: root.frame_x + Math.floor((root.frame_w - (self.width - 1px)) / 2 / 1px) * 1px;
-        y: root.frame_y + FlipperTheme.popup_hdr_h + 4px + i * FlipperTheme.popup_line_h;
+        y: root.frame_y + root.hdr_h + FlipperTheme.popup_body_pad + i * FlipperTheme.popup_line_h;
         text: line;
         font-size: 16px;
         color: FlipperTheme.black;
     }
     if root.button != "": Text {
         x: root.frame_x + Math.floor((root.frame_w - (self.width - 1px)) / 2 / 1px) * 1px;
-        y: root.frame_y + FlipperTheme.popup_hdr_h + 4px
+        y: root.frame_y + root.hdr_h + FlipperTheme.popup_body_pad
             + root.message.length * FlipperTheme.popup_line_h;
         text: root.button;
         font-size: 16px;
@@ -329,8 +344,8 @@ component BootPopup inherits Rectangle {
 
     for row[i] in root.rows: line_box := Rectangle {
         x: root.frame_x;
-        y: root.frame_y + FlipperTheme.popup_hdr_h + 4px + row.y;
-        width: root.frame_w;
+        y: root.frame_y + root.hdr_h + FlipperTheme.popup_body_pad + row.y;
+        width: root.frame_w - (root.needs_scroll ? FlipperTheme.popup_gutter : 0px);
         height: row.kind == 0 ? FlipperTheme.popup_line_h : FlipperTheme.popup_row_h;
         background: transparent;
         visible: !root.has_message;
@@ -391,7 +406,7 @@ component BootPopup inherits Rectangle {
         }
         // Chevrons only where there is a value to walk through: a row that has
         // nothing to show yet would otherwise promise Left and Right do something.
-        if row.kind == 2 && row.selected && row.value != "": Text {
+        if row.kind == 2 && row.selected && row.value != "" && !row.at_start: Text {
             x: value.x - FlipperTheme.size_gap - (self.width - 1px);
             y: 3px;
             text: "<";
@@ -412,7 +427,7 @@ component BootPopup inherits Rectangle {
             color: FlipperTheme.black;
         }
         chevron_r := Text {
-            visible: line_box.spinnable;
+            visible: line_box.spinnable && !row.at_end;
             x: parent.width - FlipperTheme.popup_pad_h - (self.width - 1px);
             y: 3px;
             text: ">";
@@ -420,9 +435,20 @@ component BootPopup inherits Rectangle {
             color: FlipperTheme.black;
         }
     }
+
+    if root.needs_scroll && !root.has_message: Scrollbar {
+        x: root.frame_x + root.frame_w - FlipperTheme.popup_scrollbar_pad - 1px;
+        y: root.frame_y + root.hdr_h + FlipperTheme.popup_body_pad;
+        height: root.body_h;
+        total: root.scroll_total;
+        visible_extent: root.scroll_visible;
+        offset: root.scroll_offset;
+    }
 }
 
 export component BootBody inherits Rectangle {
+    // The header. flipctl opens this screen from Settings under another name.
+    in property <string> heading: "Select Profile";
     in property <[BootRow]> rows;
     in property <int> selected;
     in property <int> scroll;
@@ -468,7 +494,7 @@ export component BootBody inherits Rectangle {
         // prototype whenever the remaining width is odd.
         x: Math.floor((root.width - (self.width - 1px)) / 2 / 1px) * 1px;
         y: FlipperTheme.boot_title_y;
-        text: "Boot Menu";
+        text: root.heading;
         font-size: 16px;
         font-family: "Born2bSportyV2";
         color: FlipperTheme.black;
@@ -656,12 +682,16 @@ export component BootBody inherits Rectangle {
     in property <length> popup_icon_h;
     in property <string> popup_size_number;
     in property <string> popup_size_unit;
+    in property <bool> popup_show_size: true;
     in property <length> popup_size_slot_w;
     in property <[BootPopupRow]> popup_rows;
     in property <[string]> popup_message;
     in property <string> popup_hint;
     in property <length> popup_w;
     in property <length> popup_body_h;
+    in property <int> popup_scroll_total;
+    in property <int> popup_scroll_visible;
+    in property <int> popup_scroll_offset;
     in property <bool> popup_open;
 
     if root.popup_open: BootPopup {
@@ -671,11 +701,15 @@ export component BootBody inherits Rectangle {
         icon_h: root.popup_icon_h;
         size_number: root.popup_size_number;
         size_unit: root.popup_size_unit;
+        show_size: root.popup_show_size;
         size_slot_w: root.popup_size_slot_w;
         rows: root.popup_rows;
         message: root.popup_message;
         button: root.popup_hint;
         frame_w_in: root.popup_w;
         body_h_in: root.popup_body_h;
+        scroll_total: root.popup_scroll_total;
+        scroll_visible: root.popup_scroll_visible;
+        scroll_offset: root.popup_scroll_offset;
     }
 }

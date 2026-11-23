@@ -7,12 +7,18 @@
 set -eu
 APPDIR=${APPDIR:-$(cd "$(dirname "$0")" && pwd)}
 export APPDIR
-export FLIPCTL_UI="$APPDIR/usr/share/flipctl-ui"
-export PATH="$APPDIR/usr/bin:$PATH"
+if [ -d "$APPDIR/usr/share/flipctl-ui" ]; then
+    export FLIPCTL_UI="$APPDIR/usr/share/flipctl-ui"
+    unset FLIPCTL_THEME
+    export PATH="$APPDIR/usr/bin:$PATH"
+    carried="$APPDIR/usr/lib/python"
+else
+    export FLIPCTL_UI="${FLIPCTL_UI:-$(cd "$APPDIR/../.." && pwd)}"
+    carried="$APPDIR"
+fi
 # The renderer our Rust apps compile in, chosen here at run time: the panel is two
 # colours and a vector rasteriser would put grey between them.
 export SLINT_BACKEND=winit-software
-carried="$APPDIR/usr/lib/python"
 
 [ $# -eq 0 ] && exec env PYTHONPATH="$carried${PYTHONPATH:+:$PYTHONPATH}" \
     python3 "$carried/launcher.py"

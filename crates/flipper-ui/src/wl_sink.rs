@@ -753,10 +753,13 @@ delegate_noop!(State: ignore wl_surface::WlSurface);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{PANEL_H, PANEL_W};
+
+    const PANEL: (u16, u16) = (PANEL_W, PANEL_H);
 
     #[test]
     fn widescreen_uses_integer_scale_and_input_tracks_margins() {
-        let layout = Layout::new((800, 480), (256, 144), None);
+        let layout = Layout::new((800, 480), PANEL, None);
         assert_eq!(layout.content, (768, 432));
         assert_eq!(layout.origin, (16, 0));
         assert_eq!(layout.controls_height, 48);
@@ -774,16 +777,16 @@ mod tests {
 
     #[test]
     fn fits_portrait_small_and_scale_limited_surfaces() {
-        let portrait = Layout::new((480, 800), (256, 144), None);
-        assert_eq!(portrait.content, (256, 144));
+        let portrait = Layout::new((480, 800), PANEL, None);
+        assert_eq!(portrait.content, PANEL);
         assert_eq!(portrait.origin, (112, 296));
-        let native = Layout::new((256, 144), (256, 144), None);
+        let native = Layout::new(PANEL, PANEL, None);
         assert_eq!(native.controls().count(), 0);
         assert_eq!(native.key_at(128.0, 72.0), Some(FlipperKey::Ok));
-        let tiny = Layout::new((128, 128), (256, 144), None);
+        let tiny = Layout::new((128, 128), PANEL, None);
         assert_eq!(tiny.content, (128, 72));
         assert_eq!(tiny.key_at(64.0, 64.0), Some(FlipperKey::Ok));
-        let limited = Layout::new((1920, 1080), (256, 144), Some(2));
+        let limited = Layout::new((1920, 1080), PANEL, Some(2));
         assert_eq!(limited.content, (512, 288));
     }
 }

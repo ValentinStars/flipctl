@@ -181,12 +181,15 @@ writes the codec mixer, `/api/sound/outputs` lists the outputs and
 `/api/radio/install` installs the decoder. There is no server here, so each of those
 became something the app does itself, and that is where every divergence comes from.
 
-**The player is mpv, and the app owns it.** mpg123 decodes the same streams in a
-tenth of the size and cannot be asked anything while it does it. mpv takes a JSON
-command socket, which is where three rows get their answers: the volume it applies
-to a running stream, the output it can move one to, and the station's now-playing
-title. It also dies with the app (`PR_SET_PDEATHSIG`), where the prototype's server
-kept mpg123 playing after the user left the scene.
+**The player is the app, and it needs nothing installed.** The stream is fetched,
+decoded and played in the binary: an HTTP/1.0 GET with `Icy-MetaData: 1` (rustls
+for the four https stations, Mozilla's roots compiled in), minimp3 for the decoding
+and a playback stream on the PulseAudio socket PipeWire serves, which is how the
+recorder plays its takes. Every profile has `pipewire-pulse`, so the app works the
+same in all of them, Minimal included; it was mpv before, which only @Desktop has,
+and bundling that would have meant ffmpeg's whole dependency fan-out. Closing the
+app ends the stream, where the prototype's server kept mpg123 playing after the user
+left the scene.
 
 **Titles are transliterated, not shown as question marks.** The panel's fonts are
 printable ASCII, which the prototype worked around by writing every station name in
@@ -210,25 +213,29 @@ that cannot tell those from a track would put either on the panel as if it were
 one. There is no filtering for it: a station either says what is playing or says
 nothing, and nothing is what the fallback to its own name is for.
 
-**Now playing is the station's own title, not just its name.** New here, and the
-reason for choosing mpv: a line under the last row reads `Playing: <icy-title>`
+**Now playing is the station's own title, not just its name.** New here: the
+titles are taken out of the stream before the decoder sees it, and a line under the
+last row reads `Playing: <icy-title>`
 while the station sends one and falls back to its name when it does not. It went in
 the title bar first, beside the app's name, which is where the prototype puts the
 station name; moved under the rows because a title is the longest string on this
-screen and the bar could only spare 147 of the page's 245 pixels for it. Non-ASCII in a title becomes
+screen and the bar could only spare 147 of the page's 245 pixels for it. It wraps
+onto a second line, which is all that clears the soft keys, and is cut there. Non-ASCII in a title becomes
 `?` in Rust rather than at the glyph table, so what is measured is what appears.
 
-**The volume is the stream's, not the machine's.** The prototype's slider wrote the
-NAU8822 mixer through `amixer`, so it moved the whole device's output. Here it is
-mpv's own volume: it moves this stream and leaves the user's system volume alone.
-Nothing else on the panel is playing, so the two look the same on the device, and
-only this one cannot surprise somebody by turning the desktop down.
+**The volume is the output's, as the prototype's was.** The prototype's slider wrote
+the NAU8822 mixer through `amixer`. Here it is the volume of the sink being played
+on, set over the same socket: WirePlumber puts the codec's `Speaker` control behind
+the speaker sink's volume, so 100% is the amplifier's +6dB, where a stream's own
+volume only attenuates and left the radio quieter than the prototype. Switching
+output makes the row that output's.
 
-**The outputs come from mpv, and the first one is the sink flipctl pinned.** The
-prototype's server split the codec into Speaker and Headphone and hid Loopback.
-mpv's own enumeration of PipeWire sinks is what the player will actually accept, so
-that is the list, with `Default` for passing it no device at all, which leaves the
-app on the panel's speaker that `wl.rs` pinned for it.
+**The outputs are the sound server's sinks, named as the recorder names them.** The
+prototype's server split the codec into Speaker and Headphone and hid Loopback. Here
+the list is the server's sinks: the one `wl.rs` pinned first as Speaker, then HDMI,
+then DisplayPort, then anything else under its own description. The stream is always
+played on a named sink rather than the server's default, which is usually a display,
+and moving it is the server's own move, so the station does not restart.
 
 What the row shows depends on when the television was plugged in, which is a device
 quirk rather than an app one and worth writing down. Measured 2026-09-03:
@@ -247,8 +254,14 @@ quirk rather than an app one and worth writing down. Measured 2026-09-03:
     attached stays off. That is a kernel-side gap in the HDMI codec's jack
     reporting, not something the app or wireplumber can see.
 
-The app therefore lists whatever sinks exist when it starts, which is the honest
-answer to a question whose answer changes.
+The app therefore follows the sinks as they come and go, subscribed to the server's
+events for them; a sink that goes while it is chosen sends the stream back to the
+speaker.
+
+Seen 2026-11-04, with a Dell S2721QS attached at boot: the card came up in
+`pro-audio`, its stereo profile missing, and HDMI stayed silent for everything (a
+`pw-cat` tone included) while its PCM ran, until no stream had used it for long
+enough for the node to suspend. Every later use played. That is below the app too.
 
 Left alone deliberately, 2026-09-03: attach the television before the machine boots
 and HDMI audio works. The two cheap ways to paper over the hotplug case were both
@@ -260,18 +273,17 @@ the HDMI codec, in the kernel.
 
 **A stream is judged by whether sound comes out, not by a timer.** The prototype
 could only ask whether mpg123 was still running, so it gave a stream 3.5 seconds to
-prove itself and treated anything else as a failure. mpv answers a better question:
-`time-pos` is the position of the audio being played, so it appears when sound does.
-Measured on the two ways a station can fail: a URL that answers with something
-unplayable ends mpv inside five seconds, which is the dialog, and a host that cannot
-be reached leaves mpv up with no position for as long as its own timeouts take,
-which that line reports as `Connecting...` because nothing has failed yet. A stream
+prove itself and treated anything else as a failure. Here a stream is up once audio
+has reached the server. A URL that answers with an error or with something that is
+not MP3 ends the player, which is the dialog, and a host that is slow to answer
+leaves it waiting for as long as the connect and read timeouts allow, which that
+line reports as `Connecting...` because nothing has failed yet. A stream
 that dies after it was playing stops without a dialog: the button going back to Play
 is all there is to say about it.
 
 **No install dialog.** The prototype's three-state modal exists because its server
-had no package manager integration. `app.toml` declares mpv and flipctl installs it
-before the app is launched, so the case the modal covered cannot arrive.
+had to install the decoder. The decoder is in the binary here, so there is nothing
+to install and the case the modal covered cannot arrive.
 
 **The failure dialog is flipctl's own.** Same wording as the prototype, "Stream
 error" over "Could not start `<station>`", in `Modal` with `Ok` on the right soft
@@ -285,6 +297,302 @@ draws only its right-hand Play button and leaves Back undiscoverable.
 station and the volume in a module-level object so re-entering the scene finds them,
 which works because the scene is torn down and the page is not. An app here is a
 process: closing it ends the process, and the state goes with it.
+
+## Voice recorder, ported 2026-11-04
+
+`js/apps/record.js` and `js/apps/voice_recorder_files.js`, transcribed into
+`apps/recorder`. The prototype asked a root server to run sox, amixer, lame, oggenc
+and `play`; an app here has neither root nor the codec (the unit is
+`DevicePolicy=closed`), and it installs nothing, so every divergence below comes
+from doing all of it in the app's own process over the sound server's socket.
+
+**Nothing is run and nothing is installed.** Capture, playback and both volumes go
+over the PulseAudio socket PipeWire serves (the pure-Rust `pulseaudio` crate). LAME
+and libvorbis encode and minimp3 and libvorbis decode, all compiled into the binary;
+a WAV is read and written directly. The manifest has no `apt`; the binary still
+links only libc, libm and libgcc_s. LAME is LGPL-3.0, added to `about.toml` for it
+alone, since there is no MP3 encoder under a permissive license.
+
+**The gain is an AGC, not the prototype's fixed 6dB.** A real take with the fixed
+gain measured -38.5dBFS RMS against a -1.6dBFS peak: the voice sat 37dB under one
+click and played back quiet at any volume. The chain is the prototype's channel and
+80Hz high-pass, then an AGC aiming the envelope at -12dBFS (up to +30dB, down to
+-12dB, held below -55dBFS so the room's hiss is not lifted between words), then a
+soft limiter from -1dBFS. LAME at VBR 4 and Vorbis at quality 0.4 are the
+prototype's `lame -V 4` and `oggenc -q 4`. Pausing stops the writing for every
+format and keeps the meter live.
+
+**Input device picks a channel; it does not change the mixer.** The built-in mic is
+on the codec's left channel and the jack on its right, so the app keeps one. The
+prototype flipped the Internal/Headset Microphone switches, which is system state an
+app may not touch. The first option reads `Built-in mic` where the prototype has
+`Build-in mic`.
+
+**Input gain is the source's volume** on the sound server, shown as a percentage on
+a slider row, like the radio's Volume. The prototype showed dB from its own amixer
+mapping.
+
+**Names are a counter, `F1-REC-001`, and there is no rename.** The prototype's
+bracket template and its keyboard editor are gone; the File name row shows the next
+name and is not selectable. Takes go to `~/Recordings`.
+
+**Lengths come from the files' own headers** (WAV data size, OGG last granule,
+LAME's Xing frame count), not from `soxi -D` per row.
+
+**Playback is a stream the app feeds**, so pause corks it and a seek moves the
+decoder and flushes the server's buffer, where the prototype killed and respawned
+`play` at an offset. The position is the server's read offset, what has actually
+come out. At the end Ok plays the take again from the start. A WAV seeks directly; MP3 and OGG decode forward to the time, from the
+start again for a seek backwards. A seek is 10s per press; the prototype's hold-to-accelerate is not
+ported. The player's Up and Down move the speaker's volume, as in the prototype.
+
+**The Files page is flipctl's own menu**, five rows under the status bar, without the
+prototype's title bar and breadcrumb (apps have no breadcrumbs). Its soft keys are
+Close, Record, Edit and Play; the prototype's Home is Close here, on both pages, as in
+the radio. The Edit box has Delete and Sort; the sort popover is replaced by Left
+and Right cycling the chip and Ok applying it.
+
+**Output device replaces the Folder row on the recorder page,** under Input device.
+The prototype's Folder row was a stub that never opened anything, and the folder is
+fixed here, so the page has a row for where a take plays instead: the speaker,
+HDMI, DP or any other sink plugged in. It is the app's own choice, not the system
+default. The recording panel still names the folder.
+
+**Background recording needs nothing of the app.** Back never reaches it, so a take
+keeps running while the app is in the background. The prototype's status-bar dot
+for a background take is not ported. Close stops a running take and finishes the
+file rather than leaving it running.
+
+## The browser, ported 2026-09-28
+
+`js/apps/browser.js` (cf09c8c, "fake browser concept"), transcribed into
+`apps/browser`. The prototype pans and zooms over a screenshot; here the screenshot is
+a live page, from Chromium running headless and screencasting over the DevTools
+protocol on a pipe. The numbers are the prototype's: x1 to x8 at 300 pad units a
+doubling in steps of 0.05, a tick of the motor every 0.1 and a thump at either limit,
+the 4px crosshair with its white halo, and the 64px minimap. Where the prototype
+stops, the port had to go on, and that is where each divergence comes from.
+
+**The page is seven panels wide.** Chromium lays out at 1792x1008, the shape of the
+prototype's 1790x1008 mockup rounded to a multiple of the panel, so x1 fills the panel
+exactly and x7 is one CSS pixel to one panel pixel.
+
+**Shrinking is a summed-area table, not a mip chain.** The prototype halves its image
+repeatedly and draws from the nearest level so that every source pixel is averaged.
+A summed-area table gives the exact mean of any rectangle in four lookups, so each
+panel pixel is the average of the page pixels under it at every factor, not only at
+the mip levels, and a frame costs one pass to prepare.
+
+**Zoom follows the finger sideways, not up and down.** The prototype zooms on the
+vertical travel, up to magnify. On the device that was asked to change on first use:
+with PTT held, right magnifies and left shrinks, at the same 300 units a doubling.
+
+**The minimap sits bottom right, and only while the view moves.** The prototype
+puts it bottom left and shows it whenever the zoom is past x1. Asked for on the
+device: it sits in the bottom-right corner, outlined black with white outside that
+and a pixel of white inside it, so the view's frame never merges with the outline at
+the page's edge, and in by those three pixels so all four of its sides show, and it comes up
+when the pad or the arrows move the view, stays while PTT is held, and goes down
+three seconds after the last move.
+
+**The halo is kept as the prototype draws it.** It runs one pixel past the left and
+top arms and stops level with the right and bottom ones. That looks like an
+off-by-one, but it is what the design shows, so it is transcribed rather than
+corrected.
+
+**New: Ok clicks, the arrows pan, Edit types an address, Back goes back.** The
+prototype has none of them yet. Ok clicks the page point under the cursor. The arrows
+move the cursor 16 panel pixels a press, as the pad would; with the cursor already
+against the page's edge, a press further that way scrolls the page by 80% of what is
+visible instead, so each screenful overlaps the last. They scrolled on every press at
+first, which on the device read as the arrows doing nothing whenever the page had
+nowhere to go. Edit opens flipctl's own keyboard on the current address: a bare host gets
+`https://`, and words become a DuckDuckGo search. Back goes one page back and leaves
+from the first; Escape always leaves. A drag of the cursor also moves the page's
+pointer, so hover states show.
+
+**A click in a text field opens the keyboard on it.** New, and not in the prototype.
+After Ok the app asks the page, off the thread that draws, whether the focus is now
+in a text input, a textarea or an editable element, looking through shadow roots and
+same-origin frames. If it is, the keyboard opens titled with the field's label,
+placeholder or name, and with its text. Done selects the field's contents and types
+over them with `Input.insertText`, so the page hears ordinary input events rather
+than having its value set behind its back. Done on unchanged text writes nothing,
+since the panel shows the value in ASCII and that is not always the value. A
+password is shown as typed: the keyboard has no masking yet, and flipctl's own
+password entry has none either. Nothing is submitted: Done fills the field and the
+page's own button sends it.
+
+**New: the strip, with tabs, instead of soft keys.** Asked for on the device: no
+soft keys, and the address reached by pushing the cursor up. At the top of the
+site, which is the page scrolled to its top (the screencast frame carries the scroll
+offset) with the view showing that top, a 32px strip is across the panel and the page
+is pushed down under it, not covered; once the view leaves the top, by scrolling or
+by panning down while zoomed, the strip goes and the page has the whole panel. Up
+with the cursor on the top edge there, or a drag that carries on 12 panel pixels past
+it, moves the highlight into the strip, which is laid out as Chromium's: a grey tab row with the tab
+on screen white and a cross on it, a + after the last, then back, forward and reload
+as 7x7 icons beside the address in the keyboard's grey field. The arrows and the pad step the highlight from item to item, never
+onto a cross from the other row; Ok does what it is on; Down off the address or Back
+comes back to the page. The strip first came down only when asked for and went away
+again on Down, and on the device the first press anybody made was Down, meaning to
+reach the address, which put it away. It was then made permanent, with the page
+laid out at 1792x784 under it, and then asked to belong to the top of the site only,
+which is where it is now and why the layout is back to 1792x1008. Each tab is a target of its own in the one engine, and only the
+tab on screen is screencast. Titles are asked for with `document.title` when a tab
+loads, because the engine's target events carry only the title a page had when it
+was created. Closing the last tab sends it home rather than leaving nothing on screen.
+
+**A tab is a phone until it is told otherwise.** Asked for so that a captive
+portal's sign-in page comes up in its phone layout. A tab is laid out at 360x203, the
+narrowest phone in use and the width sites are tested at: 16px body text is then 6 panel
+pixels in x-height at x1, a pixel more than the panel's own font, where 512 made it 4.
+It says it is an Android phone in
+its User-Agent and its client hints. The engine is started with the phone's User-Agent
+and size, because a tab's first request goes out before a tab of it can be told
+anything. A phone icon beside reload switches the tab to a desktop, 1792x1008 and a
+desktop's User-Agent, and reloads it; the icon is then a monitor. A page without a
+viewport meta tag is laid out 980 wide in mobile mode, as a phone lays it out.
+
+**The engine does not say it is headless.** DuckDuckGo answered a search on the
+device with a captcha. Headless Chromium puts HeadlessChrome in its User-Agent and
+its client hints and sets navigator.webdriver, so it is started with the User-Agent
+desktop Chromium of the same major version sends on Linux and with
+AutomationControlled off. It is a launch flag rather than a per-tab override because
+a tab created blank and sent on to its address afterwards never sent a picture, and a
+tab created on its address has made its first request before it can be told
+anything. The captcha could not be made to come back from the device or the host
+with or without this, so it cuts the obvious signals rather than being a proven fix.
+
+**The pad is the app's own.** The compositor has no pointer, so nothing reaches a
+hosted app's pad unless the app opens it. The browser reads it on a thread of its own
+through `TouchpadSource`, which `flipctl-app` now exports behind its `device`
+feature, together with `Haptic`, the keyboard and `Key::flipper`.
+
+## System info, added 2026-10-01
+
+`menu.js` lists "System info" first under Settings and opens nothing from it: there is
+no scene behind the row. This one is ours, a detail screen like Battery info, with no
+prototype to transcribe.
+
+It shows what the machine is (model, hostname, SoC, CPU, CPU serial, memory), what it
+runs (OS, build, git, profile, when the profile was made, kernel, when that was built,
+flipctl's own commit), the UFS (part, size, version, link, life used, health), the
+SD card, the battery, the radios, every hardware address, and uptime. Long, so it
+scrolls, and a value too wide for its row wraps onto full-width lines under its
+label, per `rule.overflow`. Everything is read from files and two unprivileged
+ioctls, on a two-second `Watch`; nothing shells out.
+
+**The right soft key jumps a section and names it**: Software, UFS, SD, Battery and
+so on, then Top from the last screen.
+
+**QR shows the page as a QR code, full screen.** Plain text, one `label: value` a
+line: Apple's Camera acts only on the payloads it knows (URLs, geo, SMS, mail, tel,
+contacts, events, Wi-Fi) and says "No usable data found" for text, which a scanner
+app or Google Lens shows. The code is always version 29, 133 modules a pixel each,
+with `qr_icon` modules left white in the middle for the icon. It carries less than
+the page (no SD card, radios, or anything that changes by the minute) so the text
+fits error correction Q, which pays for the icon's square with room to spare.
+
+**The SD card's ratings come from its SD Status register** (speed class, UHS grade,
+video class, app performance class, each with what it promises), the way the SD
+spec lays them out, and so do its allocation unit, cache and command queue, and
+discard. Its spec version is in the SCR; SDUC and write protection are in the CSD.
+An SDUC card gets a "SD boot no (SDUC)" row: Linux drives one, the boot ROM cannot.
+
+**What the card supports and has selected is asked of the card**: speeds, power
+limit, current and command system come from CMD6 in check mode, which switches
+nothing but needs CAP_SYS_RAWIO. System info runs `sudo flipctl sd-modes` once per
+card, not every poll, and leaves the rows out when it gets no answer. The host's
+own view, debugfs `ios`, is not shown.
+
+**Memory is what is fitted**, from the device tree, in binary gigabytes, beside what
+is in use. `MemTotal` is short by the firmware's carve-out and what the kernel keeps.
+
+**The CPU serial is U-Boot's**, worked out from the OTP's cpuid the way
+`rockchip_cpuid_set` does it, so it agrees with the SSH banner and the access point's
+SSID. The OTP is world-readable; no tool is run.
+
+**The Wi-Fi address is the card's own**, from `ETHTOOL_GPERMADDR`: NetworkManager
+randomises the one it scans with, so `address` says nothing about the card.
+Bluetooth's comes from `HCIGETDEVINFO`, since sysfs does not carry it.
+
+**`BUILD_GIT` is shown as the image wrote it**, which is with its `@`, `:` and `-`
+stripped by the build's `tr -dc '[:alnum:][:space:]'`. The clean form is not kept
+anywhere on the device.
+
+## Settings holds the system rows, reorganised 2026-10-29
+
+`menuItems` has Boot Menu on the main menu, and the port added App Manager beside
+Apps. Both now sit under Settings: App Manager, then the boot menu as OS
+Profiles, then Update FlipperOS (was Update profile) and Reinstall FlipperOS (was
+Install FlipperOS). The boot menu's header reads OS Profiles when flipctl opens it;
+the standalone boot menu and its terminal read Select Profile. The manager's trail starts
+at Settings, and its switcher card puts Settings under it, so Close lands there.
+
+**Update FlipperOS updates every profile**, through `update-profile --every`. The
+screen lists them in two groups by check-profile's word: Updated automatically
+(pristine, booted, customized) and Blocked (packages, system), which a forced update
+takes too as Changes dropped. Only a profile forced past its own changes keeps its old
+version as `-obsolete-<build>`; any other is deleted, or set aside as `_old_` and
+reaped at the next boot when it is the one running. Rollback is the booted profile's.
+
+## USB-C power output, added 2026-11-10
+
+The prototype's Power Management page has a Power Delivery row that opens nothing.
+The port puts USB-C1 power out under Settings, after Battery info, showing the set on
+offer (5V, 18W, 27W) while the Flipper powers what is plugged in, always,
+whatever is plugged in and whatever sets the kernel has. The popup lists Charge the
+Flipper and a Power out row per set. Apply selects the set and swaps the power role
+to match while a partner is plugged in, so it holds until the partner is
+unplugged: the next one starts out charging the Flipper. It opens a choice popup, `ui/choice.slint`, which is new: the
+modal's wash and frame around a centred title, the options on the dropdown picker's
+pitch with its rules and selector, each with its mode in a second column, hint lines
+for the picked option, and Cancel and
+Apply. The frame is sized to its widest line and to the most hint lines any option
+has. It draws over everything, the switcher and a hosted app included. Over an app,
+flipctl takes the panel back and puts the app's last frame under the wash.
+
+The same popup can open by itself when such a partner is plugged in, and at startup
+if one already is, since a reboot puts the port back on the 5V set. That is off for
+now, behind `USB_ASK_ON_PLUG` in the binary. The options come
+from the device tree's capability sets in sysfs.
+
+## LED brightness, added 2026-11-12
+
+The prototype has no LED settings. LED Brightness under Settings, after USB-C1 power
+out, opens a menu level with one row per MCU LED group: Link, Power and Wattmeter.
+Each shows its group setting between chevrons, and left and right step it through
+Off, 5% and then tenths to 100%. A press is written at once, off the render loop,
+through sudo, since the nodes are root's. The MCU keeps the setting in flash and its
+own menu can change it, so a row reads the MCU's value back rather than caching it.
+The level is hidden on a kernel without the driver's group attributes.
+
+## The battery, from uevents, 2026-11-13
+
+The prototype reads the gauge's sysfs on a timer, and the port did too: capacity and
+status for the status bar every second, temperature (through the gauge's thermal
+zone) and `power_avg` for the idle screen every second, and the Battery info and
+System pages every two. The bq27xxx driver caches only capacity and flags, so each
+of those was an I2C transaction, about 70 in 15 s, on the bus the Type-C controller
+needs during an attach. The port now keeps the `POWER_SUPPLY_*` snapshot from each
+of the gauge's uevents, `src/battery.rs`, and reads the gauge once at startup
+through its `uevent` file. The gauge announces a change in capacity, flags or
+charging state, on its own 360 s poll or half a second after the charger reports
+one, so temperature stands still between those.
+
+Power on the idle screen comes from the charger instead, 2026-11-18: `current_now`
+times `voltage_now` of `bq257xx-charger`, read every second, but only while the idle
+screen is up. The charger announces no current either, so it has to be polled; two
+reads a second, against the gauge's one for `power_avg`, and with no averaging.
+
+## The idle screen's addresses, revisited 2026-10-01
+
+`drawEthCard` gives each interface a two-line card, one IPv4 and one IPv6, and the
+port showed only hardware ports with a carrier. Every address of every interface but
+loopback and dummies is shown now, one line each, so a card is as tall as its
+interface has addresses and the list scrolls a line at a time. A two-address card
+keeps the prototype's 26px pitch.
 
 ## Poll cadences, revisited 2026-09-03
 

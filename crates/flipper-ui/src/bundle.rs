@@ -33,19 +33,31 @@ pub fn root() -> PathBuf {
     app::home().join("Apps")
 }
 
-/// Both places an app can be, in the order a duplicate is resolved: the shipped one
-/// first, the user's second, so a copy of theirs shadows a copy of ours.
+/// App directories in ascending order of precedence. A source launch adds the
+/// checkout's apps before the user's directory, so a user's copy still wins.
 ///
 /// A missing folder is not an error and not worth checking for: the walk of one that
 /// is not there finds nothing, which is the same answer.
 pub fn roots() -> Vec<PathBuf> {
-    vec![PathBuf::from(SYSTEM), root()]
+    let mut roots = vec![PathBuf::from(SYSTEM)];
+    if let Some(source) = source_root() {
+        roots.extend([source.join("apps"), source.join("sample_apps")]);
+    }
+    roots.push(root());
+    roots
+}
+
+fn source_root() -> Option<PathBuf> {
+    std::env::var_os("FLIPCTL_SOURCE_ROOT").map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
 /// Whether a file is one the image shipped rather than one the user added: the one
 /// distinction that decides what may be deleted.
 pub fn shipped(path: &Path) -> bool {
     path.starts_with(SYSTEM)
+        || source_root().is_some_and(|source| {
+            path.starts_with(source.join("apps")) || path.starts_with(source.join("sample_apps"))
+        })
 }
 
 /// Where a bundle's manifest and icon are kept once read, by key. Under the user's
@@ -110,6 +122,22 @@ pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
         if is_bundle(path) {
             if let Ok(app) = read_keyed(path, key, group) {
                 apps.push(app);
+            }
+        }
+    }
+    if let Some(path) = std::env::var_os("FLIPCTL_SOURCE_PYTHON").map(PathBuf::from) {
+        if let Some(dir) = path.parent() {
+            if let Ok(manifest) = fs::read_to_string(dir.join(app::MANIFEST)) {
+                if let Some(runtime) = app::parse_manifest(
+                    &manifest,
+                    "Python Runtime".into(),
+                    &["Runtimes".into()],
+                    dir.to_owned(),
+                    path.clone(),
+                    "source-python-runtime".into(),
+                ) {
+                    apps.insert(0, runtime);
+                }
             }
         }
     }

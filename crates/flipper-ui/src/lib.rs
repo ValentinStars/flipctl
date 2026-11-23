@@ -4,10 +4,12 @@
 //! flipper-boot-menu (Falcon initramfs) and flipctl, the system launcher.
 
 pub mod app;
+pub mod battery;
 pub mod boot;
 pub mod boot_menu;
 pub mod bundle;
 pub mod catalogue;
+pub mod claim;
 pub mod dropdown;
 #[cfg(feature = "device")]
 pub mod evdev;
@@ -23,6 +25,7 @@ pub mod keyboard;
 #[cfg(feature = "device")]
 pub mod kms;
 pub mod layout;
+pub mod leds;
 pub mod log;
 pub mod net;
 pub mod netlink;
@@ -31,6 +34,8 @@ pub mod old_flipctl_loader;
 pub mod paint;
 pub mod pixel;
 pub mod platform;
+pub mod popup;
+pub mod profile_update;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod route_watch;
@@ -47,6 +52,7 @@ pub mod system;
 #[cfg(feature = "tui")]
 pub mod tui;
 pub mod update;
+pub mod usb_pd;
 pub mod watch;
 pub mod wifi;
 #[cfg(feature = "wayland")]
@@ -68,6 +74,7 @@ pub mod ui {
 /// Design tokens, generated from tokens.toml at build time.
 #[allow(dead_code)]
 pub mod theme {
+    pub const SLINT_SOURCE: &str = include_str!(concat!(env!("OUT_DIR"), "/theme.slint"));
     include!(concat!(env!("OUT_DIR"), "/theme.rs"));
 }
 

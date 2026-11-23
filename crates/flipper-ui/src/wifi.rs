@@ -367,11 +367,27 @@ fn run(args: &[&str]) -> Result<(), String> {
 /// passphrase: `nmcli device wifi connect` takes the stored secret when it is not
 /// given one, which is what lets the visible-networks list connect to a network it
 /// already knows without asking again.
+///
+/// A new password for a saved profile goes into that profile, which is then
+/// brought up. `device wifi connect` with a password would rewrite it instead, and
+/// nmcli before 1.58 drops its key-mgmt doing so (NetworkManager MR 2323).
 pub fn connect(ssid: &str, password: &str) -> Result<(), String> {
     if password.is_empty() {
-        run(&["nmcli", "device", "wifi", "connect", ssid])
-    } else {
-        run(&["nmcli", "device", "wifi", "connect", ssid, "password", password])
+        return run(&["nmcli", "device", "wifi", "connect", ssid]);
+    }
+    match saved_match(&saved(), ssid) {
+        Some(name) => {
+            run(&[
+                "nmcli",
+                "connection",
+                "modify",
+                &name,
+                "802-11-wireless-security.psk",
+                password,
+            ])?;
+            run(&["nmcli", "connection", "up", &name])
+        }
+        None => run(&["nmcli", "device", "wifi", "connect", ssid, "password", password]),
     }
 }
 
@@ -595,6 +611,28 @@ pub fn saved_content_h(count: i32) -> i32 {
 /// this panel.
 pub fn one_line(text: &str, budget: i32) -> String {
     fit(text.lines().next().unwrap_or_default().trim(), budget)
+}
+
+/// nmcli's reason for a failure: its `Error:` line, which can follow warnings.
+pub fn reason(stderr: &str) -> String {
+    let mut lines = stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.clone().next().unwrap_or_default();
+    lines.find(|l| l.starts_with("Error:")).unwrap_or(first).to_string()
+}
+
+/// Why a passphrase cannot be sent yet, or nothing. WPA takes 8 to 63 characters,
+/// and an empty one has nmcli wait two minutes on a secret agent before failing.
+pub fn passphrase_warning(text: &str) -> &'static str {
+    if (8..=63).contains(&text.chars().count()) {
+        ""
+    } else {
+        "8 to 63 characters"
+    }
+}
+
+/// Everything nmcli said, as one paragraph.
+pub fn whole(stderr: &str) -> String {
+    stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// Scroll so a row at `y` of height `h` is inside the viewport.
@@ -1413,5 +1451,23 @@ mod tests {
         assert!(is_internal("wifi-router-5g"));
         assert!(is_internal("flipper-gadget"));
         assert!(!is_internal("Home WiFi"));
+    }
+
+    #[test]
+    fn the_reason_is_the_error_line_after_any_warning() {
+        let stderr = "Warning: password not given.\nError: Secrets were required.\n";
+        assert_eq!(reason(stderr), "Error: Secrets were required.");
+        assert_eq!(whole(stderr), "Warning: password not given. Error: Secrets were required.");
+        assert_eq!(reason("\nNo network found\n"), "No network found");
+        assert_eq!(reason(""), "");
+    }
+
+    #[test]
+    fn a_passphrase_is_8_to_63_characters() {
+        assert!(!passphrase_warning("").is_empty());
+        assert!(!passphrase_warning("1234567").is_empty());
+        assert!(passphrase_warning("12345678").is_empty());
+        assert!(passphrase_warning(&"x".repeat(63)).is_empty());
+        assert!(!passphrase_warning(&"x".repeat(64)).is_empty());
     }
 }

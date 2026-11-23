@@ -53,6 +53,31 @@ fn a_derived_profile_is_named_by_its_label() {
     assert_eq!(boot::display_name("@No-Graphics"), "No Graphics");
 }
 
+/// A build an update kept shows as the profile it was, then "obsolete" and its build,
+/// and is the user's to rename or delete. Its name sorts right after the profile's.
+#[test]
+fn a_kept_build_is_named_obsolete() {
+    assert_eq!(boot::display_name("@Desktop-obsolete-1230"), "Desktop obsolete 1230");
+    assert_eq!(
+        boot::display_name("@Desktop__Desktop-clone__-obsolete-1230"),
+        "[Desktop clone] obsolete 1230"
+    );
+    assert_eq!(boot::display_name("@No-Graphics-obsolete-1219"), "No Graphics obsolete 1219");
+    assert!(boot::is_user_profile("@Desktop-obsolete-1230"));
+    assert!(boot::is_user_profile("@Desktop__Desktop-clone__-obsolete-1230"));
+    assert_eq!(
+        boot::profile_label("@Desktop__Desktop-clone__-obsolete-1230"),
+        "Desktop clone obsolete 1230"
+    );
+    // Only a build number after "-obsolete-" makes one.
+    assert!(!boot::is_user_profile("@Desktop-obsolete-new"));
+    assert!(!boot::is_user_profile("@-obsolete-1230"));
+    assert_eq!(boot::display_name("@Desktop-obsolete-new"), "Desktop obsolete new");
+    let mut names = ["@Desktop__Desktop-clone__-obsolete-1230", "@Desktop__Desktop-clone__"];
+    names.sort();
+    assert_eq!(names[0], "@Desktop__Desktop-clone__");
+}
+
 /// The icon follows the origin's base name, not the profile's own.
 ///
 /// A clone called "[My Games]" carries no hint of what it came from, so keying
@@ -495,6 +520,21 @@ fn an_entry_reports_whether_its_boot_is_proven() {
 
     assert!(spent.bad(), "an entry with no tries left sorts last");
     assert!(!armed.bad() && !tried.bad() && !blessed.bad());
+}
+
+/// A profile fails when its first entry is spent, which, spent entries sorting last,
+/// means every one is. One spent kernel beside a good one still boots the good one.
+#[test]
+fn a_profile_fails_only_when_every_kernel_is_spent() {
+    let spent = boot::Entry { tries: Some(0), ..Default::default() };
+    let good = boot::Entry { tries: None, ..Default::default() };
+    let with = |entries: Vec<boot::Entry>| boot::Profile { entries, ..Default::default() };
+
+    assert!(with(vec![spent.clone()]).failed());
+    assert!(with(vec![spent.clone(), spent.clone()]).failed());
+    assert!(!with(vec![good.clone(), spent]).failed(), "the good kernel still boots");
+    assert!(!with(vec![good]).failed());
+    assert!(!with(vec![]).failed(), "no kernel shown is no row, not a failure");
 }
 
 /// The boot order, which is the whole of the menu's state.
