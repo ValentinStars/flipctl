@@ -11,8 +11,17 @@ if [[ "${1:-}" == build ]]; then
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
     cargo build --locked --bin flipctl --target-dir "$PWD/target"
     built_binary="$PWD/target/debug/flipctl"
-    for app in browser disk-benchmark hello radio recorder speedtest sysmon tone-lab; do
-        cargo build --locked --manifest-path "apps/$app/Cargo.toml" --target-dir "$PWD/target/desktop-apps"
+    app_dir="$PWD/target/desktop-apps"
+    mkdir -p "$app_dir/debug"
+    for app in hello disk-benchmark sysmon tone-lab browser radio recorder speedtest; do
+        case "$app" in
+            hello|disk-benchmark) app_target="$app_dir" ;;
+            *) app_target="$PWD/target" ;;
+        esac
+        cargo build --locked --manifest-path "apps/$app/Cargo.toml" --target-dir "$app_target"
+        if [[ "$app_target" != "$app_dir" ]]; then
+            ln -f -- "$app_target/debug/$app-app" "$app_dir/debug/$app-app"
+        fi
     done
     if command -v npm >/dev/null; then
         npm install --prefix "$PWD/target/desktop-apps/node" --ignore-scripts --no-save \
