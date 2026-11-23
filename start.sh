@@ -5,10 +5,12 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+built_binary=
 if [[ "${1:-}" == build ]]; then
     shift
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
-    cargo build --locked --bin flipctl
+    cargo build --locked --bin flipctl --target-dir "$PWD/target"
+    built_binary="$PWD/target/debug/flipctl"
     for app in browser disk-benchmark hello radio recorder speedtest sysmon tone-lab; do
         cargo build --locked --manifest-path "apps/$app/Cargo.toml" --target-dir "$PWD/target/desktop-apps"
     done
@@ -36,7 +38,9 @@ esac
 
 if [[ -n "${FLIPCTL_BIN:-}" ]]; then
     binary="$FLIPCTL_BIN"
-elif [[ -x ./target/release/flipctl ]]; then
+elif [[ -n "$built_binary" ]]; then
+    binary="$built_binary"
+elif [[ -x ./target/release/flipctl && ! ./target/debug/flipctl -nt ./target/release/flipctl ]]; then
     binary=./target/release/flipctl
 elif [[ -x ./target/debug/flipctl ]]; then
     binary=./target/debug/flipctl
