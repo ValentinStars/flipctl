@@ -60,6 +60,19 @@ cd flipctl
 ./start.sh
 ```
 
+To build the desktop analogue with its native apps and launch it in one command:
+
+```bash
+./start.sh build gui
+```
+
+The build includes Browser, Disk Benchmark, Hello, Internet Radio, Voice
+Recorder, Speedtest, System Monitor, and Tone Lab. The source launch also makes
+the Video Player and Dither Test available on systems with `mpv`. If `npm` is
+available, the build fetches the matching native Slint binding for JavaScript
+apps. Apps that
+control Flipper One-specific hardware still require that hardware.
+
 A source launch discovers the repository's scripts and sample apps along with
 `~/Apps`. With the Slint Python binding installed for `python3`, it also
 registers the source Python runtime and uses the exact theme of the current
@@ -148,17 +161,6 @@ ExecStart=/usr/bin/python3 /path/to/waveshare_st7735.py --host 192.168.1.50 --po
 | **D-Pad Right** | `Right Arrow` | Joy Right | Next item / Right |
 
 ---
-
-## Deploying to Flipper One
-
-Set `FLIPPER_HOST` to the device address. Build the app bundles first if you want
-to deploy them alongside the shell. See [app packaging](docs/apps.md).
-
-```bash
-./build_deploy.sh --panel
-./build_deploy.sh --panel --apps
-./build_deploy.sh --app NAME
-```
 
 ## Syncing with Upstream
 

@@ -14,7 +14,10 @@ use pulseaudio::protocol::{self, ChannelVolume, Command, CommandReply, Volume};
 
 /// The codec's capture side, by name. Card numbers move between kernels; this name
 /// is derived from the platform device.
-pub const SOURCE: &str = "alsa_input.platform-sound.stereo-fallback";
+pub fn source() -> String {
+    std::env::var("PULSE_SOURCE")
+        .unwrap_or_else(|_| "alsa_input.platform-sound.stereo-fallback".into())
+}
 
 /// The sink flipctl pinned this app to, which is the panel's speaker.
 pub fn sink() -> String {

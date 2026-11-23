@@ -56,7 +56,9 @@ fn source_root() -> Option<PathBuf> {
 pub fn shipped(path: &Path) -> bool {
     path.starts_with(SYSTEM)
         || source_root().is_some_and(|source| {
-            path.starts_with(source.join("apps")) || path.starts_with(source.join("sample_apps"))
+            ["apps", "sample_apps", "target/desktop-apps"]
+                .iter()
+                .any(|dir| path.starts_with(source.join(dir)))
         })
 }
 
@@ -125,21 +127,12 @@ pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
             }
         }
     }
-    if let Some(path) = std::env::var_os("FLIPCTL_SOURCE_PYTHON").map(PathBuf::from) {
-        if let Some(dir) = path.parent() {
-            if let Ok(manifest) = fs::read_to_string(dir.join(app::MANIFEST)) {
-                if let Some(runtime) = app::parse_manifest(
-                    &manifest,
-                    "Python Runtime".into(),
-                    &["Runtimes".into()],
-                    dir.to_owned(),
-                    path.clone(),
-                    "source-python-runtime".into(),
-                ) {
-                    apps.insert(0, runtime);
-                }
-            }
-        }
+    if let Some(source) = source_root() {
+        let local: Vec<_> = source_apps(&source).collect();
+        apps.retain(|entry| {
+            entry.provides.is_empty() || !local.iter().any(|app| app.provides == entry.provides)
+        });
+        apps.extend(local);
     }
     let markers = script::markers(&apps);
     for (path, key, group) in &files {
@@ -152,6 +145,44 @@ pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
     }
     apps.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
     apps
+}
+
+/// The desktop build keeps executable code and mutable app data separate, like
+/// AppImages do. The original manifest still controls the name and capabilities.
+fn source_apps(source: &Path) -> impl Iterator<Item = AppEntry> + '_ {
+    fs::read_dir(source.join("apps")).into_iter().flatten().flatten().filter_map(move |entry| {
+        let dir = entry.path();
+        let name = entry.file_name().into_string().ok()?;
+        let manifest = fs::read_to_string(dir.join(app::MANIFEST)).ok()?;
+        let cmd = app::py_string(&manifest, "wayland")?;
+        let binary = Path::new(&cmd).file_name()?;
+        let launch = if binary == "AppRun" {
+            let run = dir.join("AppRun");
+            // These wrappers need only the assets in the checkout and system tools.
+            let ready = match name.as_str() {
+                "dither-test" | "video-player" => true,
+                "python-runtime" => {
+                    std::env::var_os("FLIPCTL_SOURCE_PYTHON").as_deref() == Some(run.as_os_str())
+                }
+                "js-runtime" => {
+                    std::env::var_os("FLIPCTL_SOURCE_JS").as_deref() == Some(run.as_os_str())
+                }
+                _ => false,
+            };
+            if !ready {
+                return None;
+            }
+            run
+        } else {
+            source.join("target/desktop-apps/debug").join(binary)
+        };
+        if !launch.is_file() {
+            return None;
+        }
+        let group: Vec<_> = app::py_string(&manifest, "folder").into_iter().collect();
+        let key = format!("source-{name}");
+        app::parse_manifest(&manifest, name, &group, dir, launch, key)
+    })
 }
 
 /// Every file under `root`, with what it is filed under and the folders it sits in.

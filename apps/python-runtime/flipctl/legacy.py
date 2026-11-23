@@ -33,6 +33,11 @@ class App:
     def __getattr__(self, name):
         if name in object.__getattribute__(self, "_properties"):
             return object.__getattribute__(self, "_instance").get_property(name)
+        if name in object.__getattribute__(self, "_callbacks"):
+            def bind(handler):
+                self.on(name, handler)
+                return handler
+            return bind
         raise AttributeError(f"no property {name!r}; the component has {self.properties()}")
 
     def __setattr__(self, name, value):

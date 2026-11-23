@@ -219,7 +219,7 @@ impl Capture {
                     sample_rate: RATE,
                 },
                 channel_map: protocol::ChannelMap::stereo(),
-                source_name: Some(std::ffi::CString::new(pulse::SOURCE).unwrap()),
+                source_name: Some(std::ffi::CString::new(pulse::source()).unwrap()),
                 buffer_attr: protocol::stream::BufferAttr {
                     fragment_size: fragment,
                     ..Default::default()

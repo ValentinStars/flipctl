@@ -48,6 +48,10 @@ function uiDir() {
     return process.env.FLIPCTL_UI || "/usr/share/flipctl/ui";
 }
 
+function themePath() {
+    return process.env.FLIPCTL_THEME || path.join(uiDir(), "theme.slint");
+}
+
 // A design token, by the name it has in @theme.
 //
 // Read out of the generated theme.slint the runtime carries, so a script gets the
@@ -58,7 +62,7 @@ function theme(name, fallback = 0) {
     if (tokens === null) {
         tokens = {};
         try {
-            const text = fs.readFileSync(path.join(uiDir(), "theme.slint"), "utf8");
+            const text = fs.readFileSync(themePath(), "utf8");
             const pattern = /out property <(?:length|int|duration)> (\w+):\s*([\d.]+)/g;
             for (const [, key, value] of text.matchAll(pattern)) {
                 tokens[key] = Number(value);
@@ -251,7 +255,7 @@ const window = {
                 libraryPaths: {
                     flipctl: path.join(ui, "crates/flipper-ui/ui"),
                     app: path.join(ui, "crates/flipctl-app/ui"),
-                    theme: path.join(ui, "theme.slint"),
+                    theme: themePath(),
                 },
             });
             this.page = new built.Page();

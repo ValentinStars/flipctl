@@ -162,7 +162,7 @@ impl Recorder {
             .name("nodes".into())
             .spawn(move || {
                 let mut conn = pulse::Conn::open().ok();
-                let gain = conn.as_mut().and_then(|c| c.source_volume(pulse::SOURCE));
+                let gain = conn.as_mut().and_then(|c| c.source_volume(&pulse::source()));
                 let outputs = conn.as_mut().map(|c| c.outputs()).unwrap_or_default();
                 let _ = tx.send(Nodes { conn, gain, outputs });
             })
@@ -274,7 +274,7 @@ impl Recorder {
         let Some(gain) = self.gain else { return };
         let gain = (gain + delta).clamp(0, 100);
         self.gain = Some(gain);
-        self.control(|c| c.set_source_volume(pulse::SOURCE, gain));
+        self.control(|c| c.set_source_volume(&pulse::source(), gain));
     }
 
     /// Set a volume over the control connection, opening it again once if the
