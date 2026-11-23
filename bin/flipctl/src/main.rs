@@ -27,6 +27,12 @@ fn main() -> ExitCode {
         return open_bundle(args.get(1).map(String::as_str));
     }
 
+    let output = value("--output").filter(|name| !name.starts_with("--"));
+    if has("--output") && (!has("--wayland") || has("--headless") || output.is_none()) {
+        eprintln!("flipctl: --output NAME requires --wayland");
+        return ExitCode::FAILURE;
+    }
+
     let result = if has("--panel") || has("--headless") || has("--wayland") {
         let frames = value("--frames").and_then(|v| v.parse::<u64>().ok());
         // Set before anything opens a device: the GPU path reads it when it loads
@@ -44,6 +50,7 @@ fn main() -> ExitCode {
             has("--headless"),
             value("--peer"),
             has("--wayland"),
+            output.as_deref(),
             // Old kernels are hidden unless asked for: see the boot menu.
             if has("--all-kernels") {
                 flipper_ui::boot::Kernels::All
@@ -111,14 +118,18 @@ fn open_bundle(path: Option<&str>) -> ExitCode {
 const EMPTY_BUTTONS: [String; 0] = [];
 
 const USAGE: &str = "\
-usage: flipctl [--panel [--kms-device PATH]] [--png PATH]
+usage: flipctl --wayland [--output NAME] [--remote ADDR]
+       flipctl --headless --remote ADDR
+       flipctl --panel [--kms-device PATH]
+       flipctl --png PATH
        flipctl open FILE
 
   open FILE      put an AppImage on the panel through the running flipctl, which
                  is what a bundle's AppRun does when a desktop starts it
 
   --panel        drive the real 256x144 SPI panel and its buttons
-  --wayland      present to the compositor that owns the panel, and take its keys
+  --wayland      fullscreen on Wayland with keyboard, mouse and touch input
+  --output NAME  request a Wayland output by connector name (e.g. HDMI-A-1)
   --kms-device   override device autodetection (default: probe /dev/dri/card*
                  for the flipper_one_display driver)
   --render-node  which GPU to convert app frames with, e.g. /dev/dri/renderD129
@@ -143,7 +154,9 @@ usage: flipctl [--panel [--kms-device PATH]] [--png PATH]
   --press SLOT   with --png, draw soft slot SLOT in its pressed state. The real
                  flash is 30ms, too brief to catch over the remote view
 
-Switches read from the environment, all off unless set:
+Environment:
+  FLIPCTL_SCALE     cap Wayland pixel scaling at 1-8 (default: automatic)
+  FLIPCTL_AMBER     set to 0 for monochrome (default: amber)
   FLIPCTL_KEYLOG    every key, and where it was sent
   FLIPCTL_PERFLOG   the per-second cost of hosting an app and of taking cards
   FLIPCTL_FRAMELOG  how much of a captured frame is not black, every tenth one";
@@ -1559,6 +1572,17 @@ impl PanelOut {
         }
     }
 
+    fn pump(&mut self) -> std::io::Result<bool> {
+        match self {
+            Self::Kms(_) => Ok(true),
+            #[cfg(feature = "wayland")]
+            Self::Wl(sink) => {
+                sink.pump()?;
+                Ok(!sink.closed())
+            }
+        }
+    }
+
     /// Keys, for the sink that also carries them. The KMS path reads evdev itself.
     fn poll_key(&mut self) -> Option<flipper_ui::KeyEvent> {
         match self {
@@ -2779,6 +2803,7 @@ fn panel(
     headless: bool,
     peer: Option<String>,
     wayland: bool,
+    output: Option<&str>,
     kernels: flipper_ui::boot::Kernels,
 ) -> std::io::Result<()> {
     use std::time::{Duration, Instant};
@@ -2790,6 +2815,9 @@ fn panel(
     use flipper_ui::ui::Screen;
     use flipper_ui::{FlipperKey, Frame, FrameSink, InputSource, PANEL_H, PANEL_W};
     use slint::ComponentHandle;
+
+    #[cfg(not(feature = "wayland"))]
+    let _ = output;
 
     // Headless: the browser view is the only output and the only input, so cog
     // (or anything else) can keep the panel. Without it the panel is required.
@@ -2810,7 +2838,7 @@ fn panel(
     } else if wayland {
         #[cfg(feature = "wayland")]
         {
-            let sink = flipper_ui::wl_sink::WlSink::new(PANEL_W, PANEL_H)?;
+            let sink = flipper_ui::wl_sink::WlSink::on_output(PANEL_W, PANEL_H, output)?;
             eprintln!("surface        {PANEL_W}x{PANEL_H} on the compositor");
             Some(PanelOut::Wl(sink))
         }
@@ -3717,6 +3745,9 @@ fn panel(
             }
         }
         if let Some(sink) = sink.as_mut() {
+            if !sink.pump()? {
+                return Ok(());
+            }
             while let Some(event) = sink.poll_key() {
                 pending_input.push(event);
             }
@@ -6971,6 +7002,7 @@ fn panel(
     _headless: bool,
     _peer: Option<String>,
     _wayland: bool,
+    _output: Option<&str>,
     _kernels: flipper_ui::boot::Kernels,
 ) -> std::io::Result<()> {
     Err(std::io::Error::other("rebuild with --features device,slint"))

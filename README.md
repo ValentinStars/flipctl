@@ -2,7 +2,7 @@
 
 [![Upstream](https://img.shields.io/badge/upstream-flipperdevices%2Fflipctl--slint-blue)](https://github.com/flipperdevices/flipctl-slint)
 [![License: GPL-3.0-only](https://img.shields.io/badge/License-GPL--3.0--only-blue.svg)](LICENSE)
-[![Language](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](Cargo.toml)
+[![Language](https://img.shields.io/badge/Rust-1.92%2B-orange.svg)](Cargo.toml)
 [![Architecture](https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64%20%7C%20armv6zk-lightgrey.svg)]()
 [![Display](https://img.shields.io/badge/display-256x144%20%7C%20128x128%20ST7735-orange.svg)]()
 
@@ -32,7 +32,7 @@ The upstream project is tightly coupled to Flipper One engineering hardware (All
 
 4. **Flipper Amber backlight rendering & scaling** (`crates/flipper-ui/src/wl_sink.rs`, `bin/flipctl/src/main.rs`)
    - Added runtime color conversion mapping grayscale panel buffer to Flipper Amber (`#FF8200`).
-   - Configurable via environment variables: `FLIPCTL_AMBER=1` and `FLIPCTL_SCALE=2` (1x to 8x integer scaling).
+   - Wayland automatically centers the frame at the largest integer scale that fits. Set `FLIPCTL_SCALE=2` to cap it at 2× or `FLIPCTL_AMBER=0` for monochrome.
 
 5. **Sample apps starter pack** (`sample_apps/`)
    - Working desktop integration utilities: Volume (PipeWire), Screen Brightness (D-Bus), Battery telemetry (sysfs), Network throughput (sysfs/WiFi), Media remote (MPRIS), System controls, Ping, Sysmon, and Doom.
@@ -47,7 +47,7 @@ The upstream project is tightly coupled to Flipper One engineering hardware (All
 ### Requirements
 
 - Linux (x86_64 or aarch64)
-- Rust toolchain (`cargo`, `rustc`)
+- Rust 1.92 or newer (`cargo`, `rustc`)
 - Wayland compositor (KDE Plasma, GNOME, Sway) or headless
 
 ### Build and Run
@@ -59,14 +59,34 @@ cd flipctl
 # Install sample apps to ~/Apps
 bash sample_apps/install_apps.sh
 
-# Run FlipCTL (starts GUI window and local web server on port 8899)
+# Run FlipCTL on Wayland, with a local browser view at http://127.0.0.1:8899
 ./start.sh
 ```
 
-To run in headless mode (accessible exclusively via web browser at `http://<ip>:8899`):
+Without Wayland, `./start.sh` serves the browser view at `http://127.0.0.1:8899`.
+Use `./start.sh lan` to listen on all interfaces and `./start.sh panel` for the
+original Flipper One SPI panel. Set `FLIPCTL_ADDRESS` to configure the listening address.
+
+### External HDMI touchscreen
+
+For the Waveshare 4.3inch HDMI LCD (B), connect HDMI for video and USB for touch.
+Use the display's 800×480 mode at 100% desktop scaling. A matching Wayland
+surface shows the 768×432 frame at 3× scaling against the top edge. The
+remaining 48 pixels form a row of five navigation buttons.
+
 ```bash
-./start.sh lan
+./start.sh gui --output HDMI-A-1
 ```
+
+Use `wayland-info` to list the output names available to FlipCTL. In KDE, a
+mirrored HDMI screen shares the laptop panel's Wayland output. Run `./start.sh`
+to use both mirrored screens. For a dedicated HDMI view, select an extended
+desktop and map the touchscreen to HDMI in the compositor's input settings.
+
+Tap or click LEFT, UP, OK, DOWN, or RIGHT to navigate. The top edge of the
+FlipCTL frame still acts as Back, and its own bottom row still holds the five
+context-sensitive soft keys. If there is too little space for the navigation row,
+touch and mouse use the directional zones inside the frame.
 
 ---
 
