@@ -16,6 +16,8 @@ else
     export FLIPCTL_UI="${FLIPCTL_UI:-$(cd "$APPDIR/../.." && pwd)}"
     carried="$APPDIR${FLIPCTL_NODE_MODULES:+:$FLIPCTL_NODE_MODULES}"
     launcher="$APPDIR/launcher.js"
+    unset DISPLAY
+    export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 fi
 # FemtoVG, not the software renderer our Rust apps compile in: this addon is built
 # with femtovg and skia only, so asking for software prints a warning on every run and

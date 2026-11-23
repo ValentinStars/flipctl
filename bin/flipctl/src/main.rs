@@ -4927,6 +4927,13 @@ fn panel(
     // on its workspace gives the panel back rather than holding it dark.
     #[cfg(feature = "wayland")]
     let mut wl_since = Instant::now();
+    #[cfg(feature = "wayland")]
+    let app_start_timeout = if std::env::var_os("FLIPCTL_SOURCE_ROOT").is_some() {
+        // A desktop app can be warming up a new graphics context or browser.
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(10)
+    };
     // The panel as the compositor sees it, which is our own surface when nothing is
     // in front and the app's when one is. Attached lazily, because reading the output
     // is only worth doing while a browser view or the deck is watching.
@@ -6050,10 +6057,13 @@ fn panel(
             // last frame with no way back.
             let alive =
                 wl_apps.iter_mut().find(|a| a.name == front).is_some_and(|a| a.session.alive());
-            let silent = !wl_drawn && wl_since.elapsed() > Duration::from_secs(10);
+            let silent = !wl_drawn && wl_since.elapsed() > app_start_timeout;
             if !alive || silent {
                 if alive {
-                    eprintln!("app            {front} drew nothing in 10s, giving the panel back");
+                    eprintln!(
+                        "app            {front} drew nothing in {}s, giving the panel back",
+                        app_start_timeout.as_secs()
+                    );
                 } else {
                     eprintln!("app            {front} exited, giving the panel back");
                     if let Some(at) = wl_apps.iter().position(|a| a.name == front) {
