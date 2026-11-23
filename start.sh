@@ -7,6 +7,7 @@ export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 if [[ "${1:-}" == build ]]; then
     shift
+    export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
     cargo build --locked --bin flipctl
     for app in browser disk-benchmark hello radio recorder speedtest sysmon tone-lab; do
         cargo build --locked --manifest-path "apps/$app/Cargo.toml" --target-dir "$PWD/target/desktop-apps"
