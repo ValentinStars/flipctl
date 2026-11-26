@@ -3338,7 +3338,8 @@ fn apply_text_input(
     screen.set_kb_warning(warning.next().unwrap_or_default().into());
     screen.set_kb_warning2(warning.next().unwrap_or_default().into());
     let current = screen.get_kb_cells();
-    if let Some(model) = current.as_any().downcast_ref::<slint::VecModel<flipper_ui::ui::KbCell>>() {
+    if let Some(model) = current.as_any().downcast_ref::<slint::VecModel<flipper_ui::ui::KbCell>>()
+    {
         if model.row_count() == cells.len() {
             for (index, cell) in cells.into_iter().enumerate() {
                 if model.row_data(index).as_ref() != Some(&cell) {
