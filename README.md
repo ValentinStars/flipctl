@@ -67,16 +67,40 @@ To build the desktop analogue with its native apps and launch it in one command:
 ```
 
 The build includes Browser, Disk Benchmark, Hello, Internet Radio, Voice
-Recorder, Speedtest, System Monitor, and Tone Lab. The source launch also makes
-the Video Player and Dither Test available on systems with `mpv`. If `npm` is
-available, the build fetches the matching native Slint binding for JavaScript
-apps. Apps that
-control Flipper One-specific hardware still require that hardware.
+Recorder, Speed test, System Monitor, and Tone Lab, plus native Slint runtimes
+for Python and JavaScript. Building them requires Python 3 with pip and npm.
+The staged Slint binding requires Python 3.12 or newer at runtime.
+Running the shell uses a Wayland compositor. Sway hosts the apps, and
+Chromium and mpv provide the browser engine and video playback.
 
-A source launch discovers the repository's scripts and sample apps along with
-`~/Apps`. With the Slint Python binding installed for `python3`, it also
-registers the source Python runtime and uses the exact theme of the current
-FlipCTL binary. Open a script from Apps to run it on the same display.
+Build both Linux architectures from the same checkout:
+
+```bash
+./start.sh build --target all
+```
+
+Use `--target amd64` or `--target arm64` for just one. The build stages the
+shell, apps and runtimes under `target/desktop-apps/x86_64/` and
+`target/desktop-apps/aarch64/`. When moving a build, copy that directory to the
+same location in a checkout of this revision on the destination. Run
+`./start.sh gui` there. FlipCTL selects the matching architecture and skips
+AppImages built for another CPU.
+
+Cross-builds need the Rust standard library for the target triple and a GNU
+cross-linker with a Linux sysroot. On AMD64, install
+`aarch64-unknown-linux-gnu` and `aarch64-linux-gnu-gcc`. For the reverse
+direction use `x86_64-unknown-linux-gnu` and `x86_64-linux-gnu-gcc`. Set
+`CARGO_TARGET_<TRIPLE>_LINKER` with the uppercase triple and underscores to
+choose a different linker. By default the cross-build downloads and verifies
+a Debian 12 glibc 2.36 sysroot using curl and dpkg-deb. Native builds use the
+host system libraries. Use a target-compatible toolchain when building for a
+different distribution baseline.
+
+The source launch also discovers scripts and sample apps in the checkout and
+`~/Apps`. Video Player and Dither Test use mpv. The AMD64 sample has its own
+Doom AppImage. On ARM64 the source launcher for Doom uses the system
+`dsda-doom` and Freedoom data. Flipper One hardware utilities require the
+corresponding hardware.
 
 Without Wayland, `./start.sh` serves the browser view at `http://127.0.0.1:8899`.
 Use `./start.sh lan` to listen on all interfaces and `./start.sh panel` for the
@@ -87,7 +111,7 @@ original Flipper One SPI panel. Set `FLIPCTL_ADDRESS` to configure the listening
 For the Waveshare 4.3inch HDMI LCD (B), connect HDMI for video and USB for touch.
 Use the display's 800×480 mode at 100% desktop scaling. A matching Wayland
 surface shows the 768×432 frame at 3× scaling against the top edge. The
-remaining 48 pixels form a row of five navigation buttons.
+remaining 48 pixels hold the five Flipper One soft keys.
 
 ```bash
 ./start.sh gui --output HDMI-A-1
@@ -98,10 +122,54 @@ mirrored HDMI screen shares the laptop panel's Wayland output. Run `./start.sh`
 to use both mirrored screens. For a dedicated HDMI view, select an extended
 desktop and map the touchscreen to HDMI in the compositor's input settings.
 
-Tap or click LEFT, UP, OK, DOWN, or RIGHT to navigate. The top edge of the
-FlipCTL frame still acts as Back, and its own bottom row still holds the five
-context-sensitive soft keys. If there is too little space for the navigation row,
-touch and mouse use the directional zones inside the frame.
+Tap or click **Z**, **X**, **C**, **V**, or **B** to send Escape, View, Power,
+Edit, or Run. The onscreen labels inside the FlipCTL frame describe what each
+key does in the current screen or app. The Power key sends a software input
+event. Flipper One's MCU handles hardware power-off on the original device.
+Use a physical D-pad or the arrow keys and Enter for directional navigation.
+The top edge of the FlipCTL frame acts as Back. On displays without space for
+the soft-key strip, touch and mouse can also navigate inside the frame.
+Hosted apps receive pointer input inside their content. The bundled 2048 sample
+accepts swipes, mouse drags and D-pad input, and keeps its best score in its app
+data directory.
+
+On desktop Linux, App Manager checks dependencies with the package manager for
+the distribution. It supports apt, pacman, dnf and zypper. The system readout
+shows uptime when charger power is unavailable.
+
+### HackRF TX
+
+Open **Apps → Radio → HackRF TX**. Use the D-pad to select a setting and **V**
+to edit it. On **Input**, **V** opens the media browser. From there, **V**
+opens **Places** with the standard folders and recently selected inputs,
+and **X** opens the keyboard for a URL or a path.
+
+On **Frequency**, Left and Right choose a digit. Up and Down cycle that
+digit between 0 and 9 independently. **X** jumps back to the MHz units digit. **V** accepts a typed frequency such
+as `99.4M` or `433920k`. On **TX Gain**, Left and Right adjust by 1 dB,
+Down and Up by 5 dB, and **X** switches between Auto and Manual. **B** applies
+either edit.
+
+From settings, **B** reviews the frequency, input and transmission settings.
+Press **V** on the review to start. **Z** stops transmission, and **X** shows
+device information from settings. During single-source playback, **X** shows
+the log and **B** also stops transmission.
+
+Folder playback shuffles its tracks once per run. During playlist
+transmission, **X** and **V** move to the previous or next track in that order,
+and **B** shows the log. Loop replays the shuffled order. Use **Stop** before
+returning to the launcher, where apps can run in the background.
+
+The app and its Python backend are shared by the AMD64 and ARM64 builds.
+Connect a HackRF One over USB and install the HackRF host tools
+(`hackrf_transfer` and `hackrf_info`) and NumPy for the Python interpreter
+used by FlipCTL. Install FFmpeg for audio input and `pactl` (PulseAudio or
+PipeWire) for system audio and the virtual output. In virtual output mode,
+route the desired audio to the **HackRF TX** output.
+
+Audio pipe mode accepts a named FIFO. The bundled CLI also accepts standard
+input with `-`. Run `python3 apps/Radio/hackrf_tx_backend.py --help` to see
+all CLI options.
 
 ---
 
