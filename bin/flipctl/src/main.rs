@@ -248,9 +248,6 @@ mod demo {
         format!("> {}", parts.join(" > "))
     }
 
-    /// Put a menu level on the screen: its rows, its live statuses and its
-    /// breadcrumb. Called on every navigation and whenever the radio state moves,
-    /// since a status provider reads that.
     /// Whether an app can be hosted at all: a compositor to run it in, and the code
     /// to drive one.
     pub fn can_host_apps() -> bool {
@@ -264,13 +261,6 @@ mod demo {
         }
     }
 
-    /// The rows of `menu` this machine has: everything, less what it cannot do.
-    ///
-    /// A machine with no `list-profiles` has no profiles to boot into, and one with no
-    /// compositor has nothing to host an app in, nor to manage apps for. An entry that
-    /// opens an empty screen, or a list whose every row fails to start, is worse than
-    /// no entry. Filtered in one place so the keys and the drawing agree: they index
-    /// the same list.
     /// What a row is called. The profile's own row takes the booted profile's kind,
     /// which a clone or a kept build shares with the profile it came from; one of no
     /// kind keeps the row's own label, as the prototype's menu.js does.
@@ -291,6 +281,7 @@ mod demo {
         })
     }
 
+    /// Use the same visible rows for rendering and key navigation.
     pub fn rows(menu: &'static Menu) -> Vec<&'static Row> {
         menu.rows
             .iter()
@@ -346,9 +337,8 @@ mod demo {
         );
     }
 
-    /// The idle screen's soft keys: none. Ok opens the menu, where desktop.js also
-    /// had Menu on slot 1 and its boot target's shortcut on slot 4.
-    pub const IDLE_LABELS: [&str; 5] = ["", "", "", "", ""];
+    /// The View key on the desktop touch strip opens the main menu from Home.
+    pub const IDLE_LABELS: [&str; 5] = ["", "Menu", "", "", ""];
 
     /// What activating a row does.
     ///
@@ -6709,15 +6699,20 @@ fn panel(
             // proves the labels line up with the hardware instead of us
             // assuming it.
             let slot = FlipperKey::SOFT_ROW.iter().position(|k| *k == event.key);
-            let menu_labels = demo::menu_labels(
-                demo::rows(stack.last().unwrap().0).get(selected as usize).copied(),
-            );
+            let on_menu_now = screen.get_screen() == Screen::Menu;
+            let labels = match screen.get_screen() {
+                Screen::Idle => demo::IDLE_LABELS,
+                Screen::Menu => demo::menu_labels(
+                    demo::rows(stack.last().unwrap().0).get(selected as usize).copied(),
+                ),
+                _ => ["", "", "", "", ""],
+            };
             match slot {
-                Some(i) if menu_labels[i].is_empty() => {
+                Some(i) if labels[i].is_empty() => {
                     eprintln!("key {} -> slot {i}, no label", event.key.name())
                 }
                 Some(i) => {
-                    eprintln!("key {} -> slot {i} \"{}\"", event.key.name(), menu_labels[i])
+                    eprintln!("key {} -> slot {i} \"{}\"", event.key.name(), labels[i])
                 }
                 None => eprintln!("key {}", event.key.name()),
             }
@@ -6729,8 +6724,6 @@ fn panel(
             );
 
             // A labelled soft key must do something, or the label is a lie.
-            let on_menu_now = screen.get_screen() == Screen::Menu;
-            let labels: &[&str; 5] = if on_menu_now { &menu_labels } else { &demo::IDLE_LABELS };
             let labelled_soft = slot.is_some_and(|i| !labels[i].is_empty());
 
             // Tab belongs to the system, not to whatever is in front. It is
@@ -8301,7 +8294,9 @@ fn panel(
                             act: DialogAct::Uninstall(at),
                         });
                     }
-                } else if key == FlipperKey::Ok && screen.get_screen() == Screen::Idle {
+                } else if matches!(key, FlipperKey::Ok | FlipperKey::View)
+                    && screen.get_screen() == Screen::Idle
+                {
                     screen.set_screen(Screen::Menu);
                     eprintln!("screen         menu");
                 } else if key == FlipperKey::Run

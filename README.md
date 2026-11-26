@@ -124,7 +124,8 @@ desktop and map the touchscreen to HDMI in the compositor's input settings.
 
 Tap or click **Z**, **X**, **C**, **V**, or **B** to send Escape, View, Power,
 Edit, or Run. The onscreen labels inside the FlipCTL frame describe what each
-key does in the current screen or app. The Power key sends a software input
+key does in the current screen or app. From Home, **X** and **OK** open the main
+menu. The Power key sends a software input
 event. Flipper One's MCU handles hardware power-off on the original device.
 Use a physical D-pad or the arrow keys and Enter for directional navigation.
 The top edge of the FlipCTL frame acts as Back. On displays without space for
@@ -223,7 +224,8 @@ ExecStart=/usr/bin/python3 /path/to/waveshare_st7735.py --host 192.168.1.50 --po
 | **OK** | `Return` / `Enter` | Key 1 / Joy Press | Open / Confirm |
 | **Back** | `Escape` / `Backspace` | Key 2 | Back one level or leave the app |
 | **Z** | `Z` | — | Go Home, cancel, or close the current view |
-| **Menu** | `Tab` / `m` | Key 3 | App Switcher / Menu |
+| **X (View)** | `X` | — | Open the menu from Home |
+| **App Switcher** | `Tab` / `m` | Key 3 | Switch between running apps |
 | **D-Pad Up** | `Up Arrow` | Joy Up | Move cursor up |
 | **D-Pad Down** | `Down Arrow` | Joy Down | Move cursor down |
 | **D-Pad Left** | `Left Arrow` | Joy Left | Previous item / Left |
