@@ -506,11 +506,12 @@ impl WlSink {
     }
 }
 
-const GRAY_PALETTE: [[u8; 4]; 256] = palette(false);
-const AMBER_PALETTE: [[u8; 4]; 256] = palette(true);
+const PALETTE_LEN: usize = 1 << u8::BITS;
+const GRAY_PALETTE: [[u8; 4]; PALETTE_LEN] = palette(false);
+const AMBER_PALETTE: [[u8; 4]; PALETTE_LEN] = palette(true);
 
-const fn palette(amber: bool) -> [[u8; 4]; 256] {
-    let mut colors = [[0; 4]; 256];
+const fn palette(amber: bool) -> [[u8; 4]; PALETTE_LEN] {
+    let mut colors = [[0; 4]; PALETTE_LEN];
     let mut index = 0;
     while index < colors.len() {
         colors[index] = pixel_color(index as u8, amber);
