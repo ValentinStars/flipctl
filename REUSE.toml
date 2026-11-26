@@ -41,6 +41,19 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Flipper FZCO"
 SPDX-License-Identifier = "MIT"
 
+# Source files added by the desktop fork. The legacy AppImages in sample_apps
+# contain third-party components and need their own distribution notices.
+[[annotations]]
+path = [
+    "start.sh",
+    "rpi-zero-w/**",
+    "sample_apps/**/*.py",
+    "sample_apps/*.sh",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Valentin"
+SPDX-License-Identifier = "MIT"
+
 # Generated compilation of third-party license texts (see about.hbs). The
 # arrangement is ours (MIT); each embedded text is quoted verbatim under its own
 # terms, as the file itself states. Use "override" (not "aggregate") so the
