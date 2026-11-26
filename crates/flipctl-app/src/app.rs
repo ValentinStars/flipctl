@@ -43,7 +43,7 @@
 //! window. The types Slint generates belong to the app's crate, so the one piece that
 //! touches them, [`Screen`], is written by the macro.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -60,10 +60,25 @@ pub struct Page {
 
 /// The kinds of page, one per body in `pages.slint`.
 pub enum Body {
-    Detail { rows: Vec<Row>, fit_gauges: bool },
-    Menu { items: Vec<Item> },
-    Log { title: String, lines: Vec<String> },
-    Canvas { picture: slint::Image, texts: Vec<Text> },
+    Detail {
+        rows: Vec<Row>,
+        fit_gauges: bool,
+    },
+    Menu {
+        items: Vec<Item>,
+    },
+    Log {
+        title: String,
+        lines: Vec<String>,
+    },
+    /// `dim` is the white composited over the status bar, 0 to 255, and `over` what is
+    /// drawn above the bar.
+    Canvas {
+        picture: slint::Image,
+        texts: Vec<Text>,
+        dim: u8,
+        over: Option<slint::Image>,
+    },
 }
 
 impl Page {
@@ -88,7 +103,25 @@ impl Page {
     /// A picture the app paints, the whole panel as `paint::Surface::panel()` makes it,
     /// with text drawn over it in the panel's fonts.
     pub fn canvas(picture: slint::Image, texts: Vec<Text>) -> Self {
-        Self::of(Body::Canvas { picture, texts })
+        Self::of(Body::Canvas { picture, texts, dim: 0, over: None })
+    }
+
+    /// Dim the status bar over a canvas, for a modal the app paints: `alpha` of white
+    /// over it, as the app's own scrim puts over the rest.
+    pub fn dim_status(mut self, alpha: u8) -> Self {
+        if let Body::Canvas { dim, .. } = &mut self.body {
+            *dim = alpha;
+        }
+        self
+    }
+
+    /// Draw `image` over the status bar, for a modal that reaches over it: what
+    /// [`overlay`](crate::overlay) makes, transparent where the bar should show.
+    pub fn over_status(mut self, image: slint::Image) -> Self {
+        if let Body::Canvas { over, .. } = &mut self.body {
+            *over = Some(image);
+        }
+        self
     }
 
     /// Size a gauge around its own label rather than the column flipctl's screens use.
@@ -188,6 +221,8 @@ pub struct Item {
     pub at_end: bool,
     /// A level bar in place of the status, filled to this fraction (0 to 1).
     pub bar: Option<f32>,
+    /// A 14px icon ahead of the label, see [`crate::icon`].
+    pub icon: Option<slint::Image>,
 }
 
 /// A menu row with its label, built on with [`Item::status`] or [`Item::toggle`] and
@@ -239,6 +274,13 @@ impl Item {
         self.tag = tag.into();
         self
     }
+
+    /// An icon ahead of the label, 14px square, drawn in the row's text colour so it
+    /// inverts with the row.
+    pub fn icon(mut self, icon: slint::Image) -> Self {
+        self.icon = Some(icon);
+        self
+    }
 }
 
 /// Text over a canvas, as `CanvasText` in `canvas.slint` takes it.
@@ -264,16 +306,19 @@ pub trait App {
     fn buttons(&self) -> [&str; 5];
 
     /// A key as it goes down, after a soft key or a menu row has shown it pressed.
-    /// Return true for a key the app used; one it leaves keeps its default, Escape
-    /// closing and Up and Down scrolling or moving the cursor. Back never arrives:
-    /// flipctl keeps it to send the app to the background.
+    /// Return true for a key the app used; one it leaves keeps its default: Escape
+    /// closing when the first button says Close and otherwise sending the app to the
+    /// background with flipctl showing its home screen, Back sending it to the
+    /// background, and Up and Down scrolling or moving the cursor. An app with steps of its own takes Back on every one but
+    /// the first and goes back a step.
     fn key(&mut self, key: Key, ui: &mut Ui) -> bool {
         let _ = (key, ui);
         false
     }
 
     /// How often to call [`App::tick`] and draw, for an app showing something that
-    /// changes on its own.
+    /// changes on its own. Asked again after every key, tick and redraw, so a page
+    /// that wants a faster clock than the rest can have one while it is shown.
     fn every(&self) -> Option<Duration> {
         None
     }
@@ -334,7 +379,13 @@ pub trait Screen {
     fn set_menu(&self, items: &[Item], selected: usize, scroll: usize);
     fn set_row_pressed(&self, pressed: bool);
     fn set_log(&self, title: &str, lines: &[String], total: usize, offset: usize);
-    fn set_canvas(&self, picture: &slint::Image, texts: &[Text]);
+    fn set_canvas(
+        &self,
+        picture: &slint::Image,
+        texts: &[Text],
+        dim: u8,
+        over: Option<&slint::Image>,
+    );
     fn set_pressed_slot(&self, slot: i32);
     fn set_arrow_pressed(&self, arrow: i32);
     fn set_status(&self, status: &Status);
@@ -359,16 +410,54 @@ pub struct Driver<A, S> {
     /// Items in the menu last drawn, which the cursor wraps round.
     count: usize,
     closed: bool,
+    /// Back or Escape was left to its default, and flipctl has yet to be asked to
+    /// take the app to the background.
+    away: Option<Away>,
+}
+
+/// Where the app asks flipctl to put the person when it goes to the background.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Away {
+    /// Back on the first step: the screen the app was started from.
+    Back,
+    /// An Escape the app does not use or label Close: the home screen.
+    Home,
 }
 
 impl<A: App, S: Screen> Driver<A, S> {
     pub fn new(app: A, screen: S) -> Self {
-        Self { app, screen, states: Vec::new(), current: (-1, ""), count: 0, closed: false }
+        Self {
+            app,
+            screen,
+            states: Vec::new(),
+            current: (-1, ""),
+            count: 0,
+            closed: false,
+            away: None,
+        }
     }
 
     /// Whether the app has closed, which the event loop then leaves.
     pub fn closed(&self) -> bool {
         self.closed
+    }
+
+    /// Whether Back or Escape asked for the background since the last look, and to
+    /// go where. Taken once.
+    pub fn take_away(&mut self) -> Option<Away> {
+        self.away.take()
+    }
+
+    /// Close, or ask flipctl for the background, as the last key left it.
+    fn settle_away(&mut self) {
+        if self.closed {
+            let _ = slint::quit_event_loop();
+        }
+        match self.take_away() {
+            Some(Away::Back) => crate::leave(),
+            Some(Away::Home) => crate::home(),
+            None => {}
+        }
     }
 
     fn state(&mut self, page: (i32, &'static str)) -> &mut Ui {
@@ -418,7 +507,9 @@ impl<A: App, S: Screen> Driver<A, S> {
                 let shown = &lines[offset..lines.len().min(offset + visible)];
                 self.screen.set_log(title, shown, lines.len(), offset);
             }
-            Body::Canvas { picture, texts } => self.screen.set_canvas(picture, texts),
+            Body::Canvas { picture, texts, dim, over } => {
+                self.screen.set_canvas(picture, texts, *dim, over.as_ref())
+            }
         }
         self.screen.set_buttons(self.app.buttons());
     }
@@ -480,7 +571,11 @@ impl<A: App, S: Screen> Driver<A, S> {
         let mut ui = *self.state(here);
         if !self.app.key(key, &mut ui) {
             match key {
-                Key::Escape => ui.closing = true,
+                // What the key says it does: Close closes, and anything else is
+                // left to send the app to the background and the person home
+                Key::Escape if self.app.buttons()[0] == crate::CLOSE => ui.closing = true,
+                Key::Escape => self.away = Some(Away::Home),
+                Key::Back => self.away = Some(Away::Back),
                 Key::Down => self.step(&mut ui, 1),
                 Key::Up => self.step(&mut ui, -1),
                 _ => {}
@@ -540,11 +635,38 @@ where
     A: App + 'static,
     S: Screen + 'static,
 {
-    let every = app.every();
     let driver = Rc::new(RefCell::new(Driver::new(app, screen)));
     driver.borrow_mut().draw();
 
+    let clock = Rc::new(slint::Timer::default());
+    let every = Rc::new(Cell::new(None));
+    let tick: Rc<dyn Fn()> = {
+        let (ticked, timer, every) = (Rc::downgrade(&driver), Rc::downgrade(&clock), every.clone());
+        Rc::new(move || {
+            let (Some(driver), Some(timer)) = (ticked.upgrade(), timer.upgrade()) else {
+                return;
+            };
+            driver.borrow_mut().tick();
+            if driver.borrow().closed() {
+                let _ = slint::quit_event_loop();
+            }
+            retime(&driver, &timer, &every, None);
+        })
+    };
+    let retimed = {
+        let (driver, clock, every, tick) =
+            (Rc::downgrade(&driver), Rc::downgrade(&clock), every.clone(), tick.clone());
+        move || {
+            if let (Some(driver), Some(clock)) = (driver.upgrade(), clock.upgrade()) {
+                retime(&driver, &clock, &every, Some(&tick));
+            }
+        }
+    };
+    let retimed = Rc::new(retimed);
+    retimed();
+
     let keys = Rc::downgrade(&driver);
+    let after_key = retimed.clone();
     bind(Box::new(move |text, down| {
         let (Some(driver), Some(key)) = (keys.upgrade(), Key::from_slint(text)) else {
             return;
@@ -553,26 +675,28 @@ where
         if press == Press::Flash {
             let later = Rc::downgrade(&driver);
             let flash = Duration::from_millis(timing::PRESS_FLASH_MS as u64);
+            let after_flash = after_key.clone();
             slint::Timer::single_shot(flash, move || {
                 if let Some(driver) = later.upgrade() {
                     driver.borrow_mut().release(key);
-                    if driver.borrow().closed() {
-                        let _ = slint::quit_event_loop();
-                    }
+                    driver.borrow_mut().settle_away();
                 }
+                after_flash();
             });
         }
-        if driver.borrow().closed() {
-            let _ = slint::quit_event_loop();
-        }
+        driver.borrow_mut().settle_away();
+        drop(driver);
+        after_key();
     }));
 
     let hooked = Rc::downgrade(&driver);
+    let after_redraw = retimed.clone();
     REDRAW.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
             if let Some(driver) = hooked.upgrade() {
                 driver.borrow_mut().draw();
             }
+            after_redraw();
         }));
     });
 
@@ -586,20 +710,31 @@ where
         }
     });
 
-    let clock = slint::Timer::default();
-    if let Some(every) = every {
-        let ticked = Rc::downgrade(&driver);
-        clock.start(slint::TimerMode::Repeated, every, move || {
-            if let Some(driver) = ticked.upgrade() {
-                driver.borrow_mut().tick();
-                if driver.borrow().closed() {
-                    let _ = slint::quit_event_loop();
-                }
-            }
-        });
-    }
-
     run()
+}
+
+/// Start, change or stop the clock to what [`App::every`] asks for now. `tick` is
+/// needed only to start a stopped clock, which the tick itself never has to.
+fn retime<A: App, S: Screen>(
+    driver: &RefCell<Driver<A, S>>,
+    clock: &slint::Timer,
+    every: &Cell<Option<Duration>>,
+    tick: Option<&Rc<dyn Fn()>>,
+) {
+    let want = driver.borrow().app.every();
+    if want == every.get() {
+        return;
+    }
+    match (want, tick) {
+        (None, _) => clock.stop(),
+        (Some(w), _) if clock.running() => clock.set_interval(w),
+        (Some(w), Some(tick)) => {
+            let tick = tick.clone();
+            clock.start(slint::TimerMode::Repeated, w, move || tick());
+        }
+        (Some(_), None) => return,
+    }
+    every.set(want);
 }
 
 #[cfg(test)]
@@ -652,7 +787,7 @@ mod tests {
             let mut s = self.0.borrow_mut();
             (s.lines, s.total, s.offset) = (lines.to_vec(), total, offset);
         }
-        fn set_canvas(&self, _: &slint::Image, _: &[Text]) {}
+        fn set_canvas(&self, _: &slint::Image, _: &[Text], _: u8, _: Option<&slint::Image>) {}
         fn set_pressed_slot(&self, slot: i32) {
             self.0.borrow_mut().slot = slot;
         }
@@ -669,6 +804,8 @@ mod tests {
         runs: u32,
         picked: Option<usize>,
         closed: bool,
+        /// The first button's label.
+        escape: &'static str,
     }
 
     impl App for Test {
@@ -684,7 +821,7 @@ mod tests {
             }
         }
         fn buttons(&self) -> [&str; 5] {
-            ["Close", "", "", "", if self.runs > 0 { "Again" } else { "Run" }]
+            [self.escape, "", "", "", if self.runs > 0 { "Again" } else { "Run" }]
         }
         fn key(&mut self, key: Key, ui: &mut Ui) -> bool {
             match key {
@@ -700,7 +837,7 @@ mod tests {
     }
 
     fn driver(kind: i32, n: usize) -> Driver<Test, Fake> {
-        let test = Test { kind, n, runs: 0, picked: None, closed: false };
+        let test = Test { kind, n, runs: 0, picked: None, closed: false, escape: "Close" };
         let mut d = Driver::new(test, Fake::default());
         d.draw();
         d
@@ -792,6 +929,26 @@ mod tests {
         d.release(Key::Escape);
         assert!(d.closed() && d.app.closed);
         assert_eq!(d.key(Key::Run, true), Press::Ignored, "nothing after closing");
+    }
+
+    #[test]
+    fn escape_not_labelled_close_goes_home_without_closing() {
+        let mut d = driver(0, 3);
+        d.app.escape = "";
+        d.draw();
+        assert_eq!(d.key(Key::Escape, true), Press::Flash);
+        d.release(Key::Escape);
+        assert_eq!(d.take_away(), Some(Away::Home));
+        assert!(!d.closed() && !d.app.closed, "still running in the background");
+    }
+
+    #[test]
+    fn back_left_to_its_default_leaves_without_closing() {
+        let mut d = driver(0, 3);
+        assert_eq!(d.key(Key::Back, true), Press::Now);
+        assert_eq!(d.take_away(), Some(Away::Back));
+        assert_eq!(d.take_away(), None, "asked once");
+        assert!(!d.closed() && !d.app.closed, "still running in the background");
     }
 
     #[test]

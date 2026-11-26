@@ -250,4 +250,7 @@ git merge upstream/dev
   - `Busy9px`: MIT
   - `HaxrCorp 4090`: CC-BY-SA-3.0
   - `Born2bSportyV2`: Unlicense
+  - `helvb08` and its generated glyph table: LicenseRef-X11-Adobe-DEC
+- Wi-Fi Scanner data: Apache-2.0 for the device signature table and
+  LicenseRef-IEEE-OUI-Public-Listing for the vendor table.
 - See `THIRD-PARTY-LICENSES.md` and `REUSE.toml` for full license details.
