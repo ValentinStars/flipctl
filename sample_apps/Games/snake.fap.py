@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Snake"
 # status = false
-# runtime = ""
 # ///
 """Classic Retro Snake for FlipCTL.
 

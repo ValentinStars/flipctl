@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Flappy"
 # status = false
-# runtime = ""
 # ///
 """Flappy Flipper (Dolphin Jump) for FlipCTL.
 

@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Tetris"
 # status = false
-# runtime = ""
 # ///
 """Classic Retro Tetris for FlipCTL.
 

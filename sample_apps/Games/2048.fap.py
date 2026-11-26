@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "2048"
 # status = false
-# runtime = ""
 # ///
 """2048 Puzzle Game for FlipCTL.
 

@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Minesweeper"
 # status = false
-# runtime = ""
 # ///
 """Retro Minesweeper for FlipCTL.
 

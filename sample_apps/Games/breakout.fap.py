@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Breakout"
 # status = false
-# runtime = ""
 # ///
 """Retro Breakout (Brick Breaker) for FlipCTL.
 

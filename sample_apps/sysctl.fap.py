@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "System"
 # status = true
-# runtime = ""
 # ///
 """Laptop System Actions for FlipCTL.
 

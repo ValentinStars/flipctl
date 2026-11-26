@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Ping"
 # status = true
-# runtime = ""
 # ///
 """Ping, on the panel.
 

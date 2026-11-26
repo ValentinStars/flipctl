@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Battery"
 # status = true
-# runtime = ""
 # ///
 """Laptop Battery & Power Health Monitor for FlipCTL.
 
