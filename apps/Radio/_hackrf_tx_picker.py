@@ -9,7 +9,7 @@ import subprocess
 import threading
 
 import flipctl
-from hackrf_tx_backend import MEDIA_EXTENSIONS
+from _hackrf_tx_backend import MEDIA_EXTENSIONS
 
 
 def desktop_folder(kind, fallback):

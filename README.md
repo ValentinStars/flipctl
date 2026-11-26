@@ -168,7 +168,7 @@ PipeWire) for system audio and the virtual output. In virtual output mode,
 route the desired audio to the **HackRF TX** output.
 
 Audio pipe mode accepts a named FIFO. The bundled CLI also accepts standard
-input with `-`. Run `python3 apps/Radio/hackrf_tx_backend.py --help` to see
+input with `-`. Run `python3 apps/Radio/_hackrf_tx_backend.py --help` to see
 all CLI options.
 
 ---

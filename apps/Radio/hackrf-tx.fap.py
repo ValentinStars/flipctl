@@ -24,13 +24,13 @@ import time
 from urllib.parse import quote, urlencode
 
 import flipctl
-from hackrf_tx_backend import (
+from _hackrf_tx_backend import (
     FRAME_SECONDS, parse_frequency, select_gain, select_mode, tx_frame,
 )
 
-from hackrf_tx_picker import MediaPicker
+from _hackrf_tx_picker import MediaPicker
 
-BACKEND = Path(__file__).resolve().with_name("hackrf_tx_backend.py")
+BACKEND = Path(__file__).resolve().with_name("_hackrf_tx_backend.py")
 SOURCES = ("File / folder / URL", "Microphone", "System audio", "Virtual output", "M12", "Audio pipe")
 MODES = ("Auto", "WFM", "NFM", "USB", "LSB", "AM")
 STOP_TIMEOUT = 7

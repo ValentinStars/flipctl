@@ -65,9 +65,9 @@ class Manifests(unittest.TestCase):
 
         Every `.py` under `apps/` that is not part of a bundle's own source is
         deployed into ~/Apps as it stands, at the same path, so a folder here is a
-        folder in the menu. A missing block makes it invisible to the scanner and a
-        syntax error makes it a traceback on the panel, both of which are cheaper to
-        catch here than on the device.
+        folder in the menu. Underscore-prefixed Python modules travel with script
+        apps in the same directory and only need to parse. App entry points also
+        need a manifest so the scanner can find them.
         """
         scripts = sorted(
             path
@@ -79,6 +79,8 @@ class Manifests(unittest.TestCase):
             with self.subTest(script=path.name):
                 text = path.read_text()
                 ast.parse(text)
+                if path.name.startswith("_") and not path.name.endswith(".fap.py"):
+                    continue
                 head = text[:8192].splitlines()
                 self.assertIn("# /// flipctl", head, "the block is what makes it an app")
                 self.assertTrue(

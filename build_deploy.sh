@@ -140,6 +140,26 @@ push_apps() {
         for n in "${ONLY[@]}"; do [ "$n" = "$1" ] && return 0; done
         return 1
     }
+    wanted_python_support() {
+        local path=$1 n
+        case "$(basename "$path")" in
+            *.fap.py) return 1 ;;
+            _*.py) ;;
+            *) return 1 ;;
+        esac
+        [ ${#ONLY[@]} -eq 0 ] && return 0
+        for n in "${ONLY[@]}"; do
+            case "$n" in
+                *.py)
+                    if [ "$(dirname "$path")" = "$(dirname "$n")" ] && [ -f "$n" ] \
+                        && head -c 8192 "$n" | grep -q "/// flipctl"; then
+                        return 0
+                    fi
+                    ;;
+            esac
+        done
+        return 1
+    }
     for app in "$here"/target/appimage/*.AppImage; do
         [ -e "$app" ] || continue
         name=$(basename "$app")
@@ -158,9 +178,7 @@ push_apps() {
             < "$app"
     done
 
-    # Script apps: every .py under apps/ that is not part of a bundle's source, sent
-    # as a tar so a folder here lands as the same folder there. flipctl groups the
-    # Apps list by those folders, so the layout is the menu.
+    # Ship script apps and their companions as a tar, preserving the menu folders.
     local scripts
     # Found the way flipctl finds them: the block in the head makes a file an app,
     # whatever its extension, so a new language needs nothing here.
@@ -175,10 +193,11 @@ push_apps() {
             # An if, not a test-and-print: the last file found is usually an
             # excluded one, and under set -e a false status there ends the deploy.
             # A folder may carry an icon.png for its own row, which has no block to
-            # find it by: named rather than sniffed, so nothing else in a folder is
-            # swept along.
-            if [ "$d" = "." ] && wanted "${f#./}" && { [ "$(basename "$f")" = icon.png ] \
-                    || head -c 8192 "$f" | grep -q "/// flipctl"; }; then
+            # find it by. Underscore-prefixed Python modules in the same directory
+            # are shared by the script apps there.
+            if [ "$d" = "." ] && { wanted_python_support "${f#./}" \
+                    || { wanted "${f#./}" && { [ "$(basename "$f")" = icon.png ] \
+                        || head -c 8192 "$f" | grep -q "/// flipctl"; }; }; }; then
                 printf '%s\n' "$f"
             fi
         done)
