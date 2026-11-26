@@ -105,32 +105,25 @@ pub fn discover(root: &Path) -> Vec<AppEntry> {
 /// what lets somebody replace a shipped app with their own without touching what
 /// the image put there.
 ///
-/// The merge happens before anything is read, rather than by discovering each root
-/// and concatenating: the comment markers scripts are recognised by come from the
-/// runtime bundles, and a runtime the image ships has to be able to name a script
-/// the user wrote.
+/// Read bundles first to learn which comments mark scripts. Within each key, the
+/// latest valid entry wins. Companion files and incompatible binaries cannot
+/// hide a launchable app with the same stem.
 pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
-    let mut found: std::collections::BTreeMap<String, (PathBuf, Vec<String>)> =
-        std::collections::BTreeMap::new();
+    let mut found = std::collections::BTreeMap::<String, Vec<(PathBuf, Vec<String>)>>::new();
     for root in roots {
         let mut here = Vec::new();
         walk(root, root, &[], &mut here);
         for (path, key, group) in here {
-            if found.contains_key(&key) && is_bundle(&path) && foreign_elf(&path) {
-                continue;
-            }
-            found.insert(key, (path, group));
+            found.entry(key).or_default().push((path, group));
         }
     }
-    let files: Vec<(PathBuf, String, Vec<String>)> =
-        found.into_iter().map(|(key, (path, group))| (path, key, group)).collect();
 
     let mut apps = Vec::new();
-    for (path, key, group) in &files {
-        if is_bundle(path) {
-            if let Ok(app) = read_keyed(path, key, group) {
-                apps.push(app);
-            }
+    for (key, paths) in &found {
+        if let Some(app) = paths.iter().rev().find_map(|(path, group)| {
+            is_bundle(path).then(|| read_keyed(path, key, group).ok()).flatten()
+        }) {
+            apps.push(app);
         }
     }
     if let Some(source) = source_root() {
@@ -145,12 +138,23 @@ pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
         apps.extend(local);
     }
     let markers = script::markers(&apps);
-    for (path, key, group) in &files {
-        if is_bundle(path) {
-            continue;
-        }
-        if let Ok(app) = script::read(path, key, group, &markers) {
-            apps.push(app);
+    for (key, paths) in &found {
+        let bundle = apps.iter().position(|app| &app.key == key);
+        for (path, group) in paths.iter().rev() {
+            if is_bundle(path) {
+                if bundle.is_some_and(|at| apps[at].bundle == *path) {
+                    break;
+                }
+                continue;
+            }
+            if let Ok(app) = script::read(path, key, group, &markers) {
+                if let Some(at) = bundle {
+                    apps[at] = app;
+                } else {
+                    apps.push(app);
+                }
+                break;
+            }
         }
     }
     apps.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
@@ -648,6 +652,30 @@ mod tests {
         assert_eq!(key(root, &root.join("thing.fap.AppImage")), "thing");
         // A script that goes without it keys the same way it always did.
         assert_eq!(key(root, &root.join("Test Tools/eth-led.py")), "Test Tools-eth-led");
+    }
+
+    #[test]
+    fn companion_files_cannot_shadow_an_app() {
+        let root = std::env::temp_dir().join(format!("flipctl-discovery-{}", std::process::id()));
+        let shipped = root.join("shipped");
+        let home = root.join("home");
+        fs::create_dir_all(&shipped).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let script = shipped.join("radio.fap.py");
+        let override_script = home.join("radio.fap.py");
+        fs::write(&script, "# /// flipctl\n# name = \"Built-in Radio\"\n# ///\n").unwrap();
+        fs::write(home.join("radio.slint"), "export component Radio {}").unwrap();
+
+        let roots = [shipped, home];
+        let entries = discover_all(&roots);
+        let found = entries.iter().find(|entry| entry.key == "radio").unwrap();
+        assert_eq!(found.bundle, script);
+        fs::write(&override_script, "# /// flipctl\n# name = \"Local Radio\"\n# ///\n").unwrap();
+        let entries = discover_all(&roots);
+        let found = entries.iter().find(|entry| entry.key == "radio").unwrap();
+        assert_eq!(found.bundle, override_script);
+        assert_eq!(found.name, "Local Radio");
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// A folder holds both kinds, and only the bundles are read as squashfs. What a
