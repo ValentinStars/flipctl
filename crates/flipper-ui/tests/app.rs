@@ -425,3 +425,28 @@ fn a_folder_in_both_roots_is_one_folder() {
     }
     assert_eq!(apps[0].key, "Test Tools-leds");
 }
+
+#[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn a_foreign_bundle_does_not_shadow_the_native_one() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let first = apps_folder("architecture-native");
+    let second = apps_folder("architecture-foreign");
+    let native = first.join("radio.fap.AppImage");
+    let foreign = second.join("radio.fap.AppImage");
+    bundle_with(&native, &[("app.toml", RADIO.as_bytes())], None);
+    bundle_with(&foreign, &[("app.toml", RADIO.as_bytes())], None);
+    let (this_machine, other_machine): (u16, u16) =
+        if cfg!(target_arch = "x86_64") { (62, 183) } else { (183, 62) };
+    for (path, machine) in [(&native, this_machine), (&foreign, other_machine)] {
+        let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.seek(SeekFrom::Start(18)).unwrap();
+        file.write_all(&machine.to_le_bytes()).unwrap();
+    }
+
+    assert_eq!(bundle::read(&foreign, &[]), Err(bundle::Skip::WrongArchitecture));
+    let apps = bundle::discover_all(&[first, second]);
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].bundle, native);
+}

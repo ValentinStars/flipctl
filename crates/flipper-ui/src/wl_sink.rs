@@ -13,21 +13,27 @@ use wayland_client::protocol::{
     wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
+};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 use crate::pixel::{Gray8, Rect};
 use crate::platform::{Frame, FrameSink, InputSource};
+use crate::theme::{color, metric};
 use crate::{FlipperKey, KeyEvent};
 
 /// Two buffers, so a frame can be written while the compositor still holds the
 /// other. One would mean waiting for release on every frame.
 const BUFFERS: usize = 2;
-const NAV_KEYS: [(FlipperKey, &str); 5] = [
-    (FlipperKey::Left, "LEFT"),
-    (FlipperKey::Up, "UP"),
-    (FlipperKey::Ok, "OK"),
-    (FlipperKey::Down, "DOWN"),
-    (FlipperKey::Right, "RIGHT"),
+const SOFT_KEY_LABELS: [&str; FlipperKey::SOFT_ROW.len()] = ["Z", "X", "C", "V", "B"];
+// Generic pixel glyphs for Escape, View, Power, Edit and Run.
+const SOFT_KEY_ICONS: [[u8; 7]; FlipperKey::SOFT_ROW.len()] = [
+    [0b1000001, 0b0100010, 0b0010100, 0b0001000, 0b0010100, 0b0100010, 0b1000001],
+    [0, 0b1111111, 0, 0b1111111, 0, 0b1111111, 0],
+    [0b0001000, 0b0001000, 0b0101010, 0b1001001, 0b1000001, 0b0100010, 0b0011100],
+    [0b1110111, 0b1000001, 0b1000001, 0, 0b1000001, 0b1000001, 0b1110111],
+    [0, 0b0000001, 0b0000010, 0b1000100, 0b0101000, 0b0010000, 0],
 ];
 
 pub struct WlSink {
@@ -71,12 +77,27 @@ struct State {
     // screen just left as well as the one arrived at.
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
+    cursor_shapes: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
+    cursor_surface: Option<wl_surface::WlSurface>,
+    cursor_theme: Option<wayland_cursor::CursorTheme>,
     pointer_pos: (f64, f64),
     active_ptr_key: Option<FlipperKey>,
+    app_pointer: bool,
+    pointer_in_app: bool,
     touch: Option<wl_touch::WlTouch>,
     active_touch: Option<(i32, FlipperKey)>,
+    touch_in_app: Option<i32>,
+    app_events: VecDeque<AppPointer>,
     busy: HashSet<wayland_client::backend::ObjectId>,
     keys: VecDeque<KeyEvent>,
+}
+
+/// Mouse and single-finger touchscreen input in logical panel coordinates.
+#[derive(Clone, Copy)]
+pub enum AppPointer {
+    Motion(u32, u32),
+    Press(u32, u32),
+    Release,
 }
 
 #[derive(Clone, Copy)]
@@ -111,22 +132,26 @@ impl Layout {
     fn controls(self) -> impl Iterator<Item = (Rect, FlipperKey, &'static str)> {
         let (left, top) = self.origin;
         let (width, height) = self.content;
-        const GAP: u16 = 4;
-        NAV_KEYS.into_iter().enumerate().filter_map(move |(index, (key, label))| {
-            if self.controls_height == 0 {
-                return None;
-            }
-            let count = NAV_KEYS.len() as u32;
-            let start = u32::from(width) * index as u32 / count;
-            let end = u32::from(width) * (index as u32 + 1) / count;
-            let rect = Rect::new(
-                left + start as u16 + GAP,
-                top + height + GAP,
-                (end - start) as u16 - GAP * 2,
-                self.controls_height - GAP * 2,
-            );
-            Some((rect, key, label))
-        })
+        let scale_x =
+            move |x: i32| (u32::from(width) * x as u32 / u32::from(crate::PANEL_W)) as u16;
+        const VERTICAL_INSET: u16 = 6;
+        FlipperKey::SOFT_ROW
+            .into_iter()
+            .zip(SOFT_KEY_LABELS)
+            .enumerate()
+            .filter(move |_| self.controls_height != 0)
+            .map(move |(index, (key, label))| {
+                let slot = crate::layout::soft_slot_x(index);
+                let start = scale_x(slot);
+                let end = scale_x(slot + metric::BUTTON_W);
+                let rect = Rect::new(
+                    left + start,
+                    top + height + VERTICAL_INSET,
+                    end - start,
+                    self.controls_height - VERTICAL_INSET * 2,
+                );
+                (rect, key, label)
+            })
     }
 
     fn key_at(self, x: f64, y: f64) -> Option<FlipperKey> {
@@ -138,23 +163,10 @@ impl Layout {
             }
         }
 
-        let x = x - f64::from(self.origin.0);
-        let y = y - f64::from(self.origin.1);
-        let (cw, ch) = self.content;
-        if !(0.0..f64::from(cw)).contains(&x) || !(0.0..f64::from(ch)).contains(&y) {
-            return None;
-        }
-        let x = (x * f64::from(crate::PANEL_W) / f64::from(cw)) as i32;
-        let y = (y * f64::from(crate::PANEL_H) / f64::from(ch)) as i32;
+        let (x, y) = self.panel_point(x, y)?;
         Some(if y >= 124 {
-            let slot = (x / (i32::from(crate::PANEL_W) / 5)).clamp(0, 4);
-            [
-                FlipperKey::Escape,
-                FlipperKey::View,
-                FlipperKey::Power,
-                FlipperKey::Edit,
-                FlipperKey::Run,
-            ][slot as usize]
+            let slot = (x / (u32::from(crate::PANEL_W) / 5)).min(4);
+            FlipperKey::SOFT_ROW[slot as usize]
         } else if y < 22 {
             FlipperKey::Back
         } else if self.controls_height != 0 {
@@ -171,16 +183,81 @@ impl Layout {
             FlipperKey::Ok
         })
     }
+
+    fn panel_point(self, x: f64, y: f64) -> Option<(u32, u32)> {
+        let x = x - f64::from(self.origin.0);
+        let y = y - f64::from(self.origin.1);
+        let (cw, ch) = self.content;
+        if !(0.0..f64::from(cw)).contains(&x) || !(0.0..f64::from(ch)).contains(&y) {
+            return None;
+        }
+        Some((
+            (x * f64::from(crate::PANEL_W) / f64::from(cw)) as u32,
+            (y * f64::from(crate::PANEL_H) / f64::from(ch)) as u32,
+        ))
+    }
 }
 
 impl State {
+    fn app_point(&self, x: f64, y: f64) -> Option<(u32, u32)> {
+        if !self.app_pointer {
+            return None;
+        }
+        let layout = self.layout?;
+        layout.panel_point(x, y).filter(|&(_, y)| {
+            y >= metric::STATUS_BAR_H as u32 && (layout.controls_height != 0 || y < 124)
+        })
+    }
+
+    fn app_motion(&mut self, x: f64, y: f64) {
+        if let Some((x, y)) = self.app_point(x, y) {
+            if matches!(self.app_events.back(), Some(AppPointer::Motion(..))) {
+                self.app_events.pop_back();
+            }
+            self.app_events.push_back(AppPointer::Motion(x, y));
+        }
+    }
+
+    fn show_cursor(
+        &mut self,
+        pointer: &wl_pointer::WlPointer,
+        serial: u32,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let Some(manager) = &self.cursor_shapes {
+            let device = manager.get_pointer(pointer, qh, ());
+            device.set_shape(serial, wp_cursor_shape_device_v1::Shape::Default);
+            device.destroy();
+            return;
+        }
+        let Some(surface) = &self.cursor_surface else { return };
+        let Some(cursor) =
+            self.cursor_theme.as_mut().and_then(|theme| theme.get_cursor("left_ptr"))
+        else {
+            return;
+        };
+        let image = &cursor[0];
+        let (x, y) = image.hotspot();
+        let (width, height) = image.dimensions();
+        pointer.set_cursor(serial, Some(surface), x as i32, y as i32);
+        surface.attach(Some(image), 0, 0);
+        surface.damage(0, 0, width as i32, height as i32);
+        surface.commit();
+    }
+
     fn release_pointer(&mut self) {
+        if std::mem::take(&mut self.pointer_in_app) {
+            self.app_events.push_back(AppPointer::Release);
+        }
         if let Some(key) = self.active_ptr_key.take() {
             self.keys.push_back(KeyEvent { key, down: false });
         }
     }
 
     fn release_touch(&mut self) {
+        if self.touch_in_app.take().is_some() {
+            self.app_events.push_back(AppPointer::Release);
+        }
         if let Some((_, key)) = self.active_touch.take() {
             self.keys.push_back(KeyEvent { key, down: false });
         }
@@ -214,6 +291,9 @@ impl WlSink {
                 "xdg_wm_base" => {
                     state.wm_base = Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
                 }
+                "wp_cursor_shape_manager_v1" => {
+                    state.cursor_shapes = Some(globals.registry().bind(g.name, 1, &qh, ()))
+                }
                 "wl_seat" => {
                     state.seat = Some(globals.registry().bind(g.name, 5.min(g.version), &qh, ()))
                 }
@@ -222,6 +302,13 @@ impl WlSink {
                 }
                 _ => {}
             }
+        }
+
+        if let (None, Some(compositor), Some(shm)) =
+            (&state.cursor_shapes, &state.compositor, &state.shm)
+        {
+            state.cursor_surface = Some(compositor.create_surface(&qh, ()));
+            state.cursor_theme = wayland_cursor::CursorTheme::load(&conn, shm.clone(), 24).ok();
         }
 
         let target = if let Some(name) = output {
@@ -299,6 +386,19 @@ impl WlSink {
         Err(io::Error::new(io::ErrorKind::TimedOut, "waiting for Wayland surface configure"))
     }
 
+    pub fn set_app_pointer(&mut self, enabled: bool) {
+        if self.state.app_pointer != enabled {
+            self.state.app_pointer = enabled;
+            self.state.pointer_in_app = false;
+            self.state.touch_in_app = None;
+            self.state.app_events.clear();
+        }
+    }
+
+    pub fn poll_app_pointer(&mut self) -> Option<AppPointer> {
+        self.state.app_events.pop_front()
+    }
+
     /// Read whatever the compositor has said, without blocking.
     pub fn pump(&mut self) -> io::Result<()> {
         self.conn.flush().map_err(io::Error::other)?;
@@ -361,6 +461,7 @@ impl WlSink {
         let (sw, sh) = (usize::from(self.w), usize::from(self.h));
         let (cw, ch) = (usize::from(cw), usize::from(ch));
         let x_indices: Vec<_> = (0..cw).map(|x| x * sw / cw).collect();
+        let palette = if self.amber { &AMBER_PALETTE } else { &GRAY_PALETTE };
         let row_width = cw * 4;
         let origin = usize::from(top) * stride + usize::from(left) * 4;
         for y in 0..ch {
@@ -372,13 +473,20 @@ impl WlSink {
             }
             let row = &self.frame[row_index * sw..][..sw];
             for (pixel, &x) in dst[start..start + row_width].chunks_exact_mut(4).zip(&x_indices) {
-                let v = row[x].0;
-                pixel.copy_from_slice(&pixel_color(v, self.amber));
+                pixel.copy_from_slice(&palette[usize::from(row[x].0)]);
             }
         }
 
-        for (rect, key, label) in layout.controls() {
-            draw_control(dst, stride, rect, label, active_keys.contains(&Some(key)), self.amber);
+        for ((rect, key, label), icon) in layout.controls().zip(SOFT_KEY_ICONS) {
+            draw_control(
+                dst,
+                stride,
+                rect,
+                label,
+                icon,
+                active_keys.contains(&Some(key)),
+                self.amber,
+            );
         }
 
         self.drawn_keys = active_keys;
@@ -398,8 +506,21 @@ impl WlSink {
     }
 }
 
-fn pixel_color(v: u8, amber: bool) -> [u8; 4] {
-    let (b, g) = if amber { (0, (u16::from(v) * 130 / 255) as u8) } else { (v, v) };
+const GRAY_PALETTE: [[u8; 4]; 256] = palette(false);
+const AMBER_PALETTE: [[u8; 4]; 256] = palette(true);
+
+const fn palette(amber: bool) -> [[u8; 4]; 256] {
+    let mut colors = [[0; 4]; 256];
+    let mut index = 0;
+    while index < colors.len() {
+        colors[index] = pixel_color(index as u8, amber);
+        index += 1;
+    }
+    colors
+}
+
+const fn pixel_color(v: u8, amber: bool) -> [u8; 4] {
+    let (b, g) = if amber { (0, (v as u16 * 130 / 255) as u8) } else { (v, v) };
     [b, g, v, 0xff]
 }
 
@@ -408,6 +529,7 @@ fn draw_control(
     stride: usize,
     rect: Rect,
     label: &str,
+    icon: [u8; 7],
     pressed: bool,
     amber: bool,
 ) {
@@ -415,25 +537,38 @@ fn draw_control(
         let index = usize::from(rect.y + y) * stride + usize::from(rect.x + x) * 4;
         dst[index..index + 4].copy_from_slice(&pixel_color(light, amber));
     };
-    let (border, fill, text) = if pressed { (255, 209, 0) } else { (160, 22, 255) };
+    let edge = color::WHITE.0;
+    let (fill, ink) = if pressed { (color::BLACK.0, edge) } else { (edge, color::BLACK.0) };
     for y in 0..rect.h {
-        let inset = 4u16.saturating_sub(y.min(rect.h - 1 - y));
+        let inset = (metric::BUTTON_CORNER as u16 - 1).saturating_sub(y.min(rect.h - 1 - y));
         for x in inset..rect.w - inset {
             let is_edge = y == 0 || y == rect.h - 1 || x == inset || x == rect.w - inset - 1;
-            plot(x, y, if is_edge { border } else { fill });
+            plot(x, y, if is_edge { edge } else { fill });
         }
     }
 
     let font = &crate::font::TITLE;
-    let scale = if rect.h >= 40 && font.text_width(label) * 2 + 8 <= rect.w { 2 } else { 1 };
-    let x = (rect.w - font.text_width(label) * scale) / 2;
+    let scale = if rect.h >= 32 { 2 } else { 1 };
+    let start = (rect.w - (7 + 4 + font.text_width(label)) * scale) / 2;
+    let icon_y = (rect.h - 7 * scale) / 2;
+    let x = start + (7 + 4) * scale;
     let y = (rect.h - u16::from(font.rows) * scale) / 2;
-    font.for_each_pixel(label, 0, 0, |px, py| {
+    let mut glyph_pixel = |x, y| {
         for dy in 0..scale {
             for dx in 0..scale {
-                plot(x + px as u16 * scale + dx, y + py as u16 * scale + dy, text);
+                plot(x + dx, y + dy, ink);
             }
         }
+    };
+    for (row, bits) in icon.into_iter().enumerate() {
+        for col in 0..7 {
+            if bits & (1 << (6 - col)) != 0 {
+                glyph_pixel(start + col * scale, icon_y + row as u16 * scale);
+            }
+        }
+    }
+    font.for_each_pixel(label, 0, 0, |px, py| {
+        glyph_pixel(x + px as u16 * scale, y + py as u16 * scale);
     });
 }
 
@@ -654,20 +789,32 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
 impl Dispatch<wl_pointer::WlPointer, ()> for State {
     fn event(
         state: &mut Self,
-        _: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         event: wl_pointer::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { surface_x, surface_y, .. }
-            | wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+            wl_pointer::Event::Enter { serial, surface_x, surface_y, .. } => {
                 state.pointer_pos = (surface_x, surface_y);
+                state.show_cursor(pointer, serial, qh);
+            }
+            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                state.pointer_pos = (surface_x, surface_y);
+                if state.active_ptr_key.is_none() && state.touch_in_app.is_none() {
+                    state.app_motion(surface_x, surface_y);
+                }
             }
             wl_pointer::Event::Button { button: 0x110, state: s, .. } => {
                 if matches!(s, WEnum::Value(wl_pointer::ButtonState::Pressed)) {
-                    if let Some(key) = state
+                    if let Some((x, y)) = state.app_point(state.pointer_pos.0, state.pointer_pos.1)
+                    {
+                        if state.touch_in_app.is_none() {
+                            state.pointer_in_app = true;
+                            state.app_events.push_back(AppPointer::Press(x, y));
+                        }
+                    } else if let Some(key) = state
                         .layout
                         .and_then(|layout| layout.key_at(state.pointer_pos.0, state.pointer_pos.1))
                     {
@@ -678,7 +825,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                     state.release_pointer();
                 }
             }
-            wl_pointer::Event::Leave { .. } => state.release_pointer(),
+            wl_pointer::Event::Leave { .. } => {
+                state.release_pointer();
+            }
             _ => {}
         }
     }
@@ -694,14 +843,25 @@ impl Dispatch<wl_touch::WlTouch, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_touch::Event::Down { id, x, y, .. } if state.active_touch.is_none() => {
-                if let Some(key) = state.layout.and_then(|layout| layout.key_at(x, y)) {
+            wl_touch::Event::Down { id, x, y, .. }
+                if state.active_touch.is_none() && state.touch_in_app.is_none() =>
+            {
+                if let Some((x, y)) = state.app_point(x, y) {
+                    if !state.pointer_in_app {
+                        state.touch_in_app = Some(id);
+                        state.app_events.push_back(AppPointer::Press(x, y));
+                    }
+                } else if let Some(key) = state.layout.and_then(|layout| layout.key_at(x, y)) {
                     state.active_touch = Some((id, key));
                     state.keys.push_back(KeyEvent { key, down: true });
                 }
             }
+            wl_touch::Event::Motion { id, x, y, .. } if state.touch_in_app == Some(id) => {
+                state.app_motion(x, y);
+            }
             wl_touch::Event::Up { id, .. }
-                if state.active_touch.is_some_and(|(active, _)| active == id) =>
+                if state.touch_in_app == Some(id)
+                    || state.active_touch.is_some_and(|(active, _)| active == id) =>
             {
                 state.release_touch();
             }
@@ -749,6 +909,8 @@ delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(State: ignore wl_surface::WlSurface);
+delegate_noop!(State: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
+delegate_noop!(State: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 
 #[cfg(test)]
 mod tests {
@@ -766,11 +928,17 @@ mod tests {
         assert!(layout.key_at(15.0, 240.0).is_none());
         assert!(layout.key_at(400.0, 240.0).is_none());
         assert_eq!(layout.key_at(782.0, 431.0), Some(FlipperKey::Run));
-        assert_eq!(layout.key_at(400.0, 455.0), Some(FlipperKey::Ok));
+        assert_eq!(layout.key_at(400.0, 455.0), Some(FlipperKey::Power));
         assert!(layout.key_at(400.0, 433.0).is_none());
-        for (button, key, _) in layout.controls() {
+        let controls: Vec<_> = layout.controls().collect();
+        assert_eq!(
+            controls.iter().map(|&(_, _, label)| label).collect::<Vec<_>>(),
+            ["Z", "X", "C", "V", "B"]
+        );
+        for (button, key, _) in controls {
             let x = f64::from(button.x + button.w / 2);
             assert_eq!(layout.key_at(x, 455.0), Some(key));
+            assert_eq!(layout.key_at(x, 431.0), Some(key));
             assert!(layout.key_at(f64::from(button.x - 1), 455.0).is_none());
         }
     }

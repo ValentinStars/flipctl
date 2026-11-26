@@ -3224,6 +3224,7 @@ fn apply_text_input(
 ) {
     use flipper_ui::keyboard::{self, Focus};
     use flipper_ui::theme::metric::KB_INPUT_PAD;
+    use slint::Model as _;
     let field_w = keyboard::field_w(i32::from(flipper_ui::font::TITLE.text_width(&input.text)));
     let fitted = keyboard::fit_input(&input.text, input.cursor, field_w - 2 * KB_INPUT_PAD);
     let cells: Vec<flipper_ui::ui::KbCell> = input
@@ -3253,7 +3254,20 @@ fn apply_text_input(
     let mut warning = flipper_ui::font::wrap(warning, KB_WARNING_W, 2).into_iter();
     screen.set_kb_warning(warning.next().unwrap_or_default().into());
     screen.set_kb_warning2(warning.next().unwrap_or_default().into());
-    screen.set_kb_cells(slint::ModelRc::new(slint::VecModel::from(cells)));
+    let current = screen.get_kb_cells();
+    if let Some(model) = current.as_any().downcast_ref::<slint::VecModel<flipper_ui::ui::KbCell>>() {
+        if model.row_count() == cells.len() {
+            for (index, cell) in cells.into_iter().enumerate() {
+                if model.row_data(index).as_ref() != Some(&cell) {
+                    model.set_row_data(index, cell);
+                }
+            }
+        } else {
+            model.set_vec(cells);
+        }
+    } else {
+        screen.set_kb_cells(slint::ModelRc::new(slint::VecModel::from(cells)));
+    }
     screen.set_kb_chrome_x(cx as f32);
     screen.set_kb_chrome_y(cy as f32);
     screen.set_kb_chrome_w(cw as f32);
@@ -3704,6 +3718,7 @@ fn apply_idle(
     screen.set_battery_temp(idle.battery_temp.unwrap_or(UNKNOWN));
     screen.set_cpu_temp(idle.cpu_temp.unwrap_or(UNKNOWN));
     screen.set_power_mw(idle.power_mw.unwrap_or(UNKNOWN));
+    screen.set_uptime(idle.uptime.as_str().into());
     screen.set_hostname(idle.hostname.as_str().into());
     screen.set_profile(idle.profile.as_str().into());
     // No profiles on this machine means no row for one, and the rest moves up.
@@ -5242,6 +5257,10 @@ fn panel(
                         req.err("not an AppImage");
                         continue;
                     }
+                    Err(flipper_ui::bundle::Skip::WrongArchitecture) => {
+                        req.err("this app targets a different CPU architecture");
+                        continue;
+                    }
                     Err(flipper_ui::bundle::Skip::Unreadable(_)) => {
                         req.err("not found");
                         continue;
@@ -5296,11 +5315,30 @@ fn panel(
             }
         }
         if let Some(sink) = sink.as_mut() {
+            #[cfg(feature = "wayland")]
+            let pointer_app = wl_apps.iter_mut().find(|app| {
+                wl_front.as_deref() == Some(app.name.as_str())
+                    && app.placed
+                    && wl_drawn
+                    && usb_ask.is_none()
+                    && !matches!(kb_for, KbFor::App { .. })
+                    && app.session.supports_pointer()
+            });
+            #[cfg(feature = "wayland")]
+            if let PanelOut::Wl(wayland) = sink {
+                wayland.set_app_pointer(pointer_app.is_some());
+            }
             if !sink.pump()? {
                 return Ok(());
             }
             while let Some(event) = sink.poll_key() {
                 pending_input.push(event);
+            }
+            #[cfg(feature = "wayland")]
+            if let (PanelOut::Wl(wayland), Some(app)) = (sink, pointer_app) {
+                while let Some(event) = wayland.poll_app_pointer() {
+                    app.session.pointer(event, app.size);
+                }
             }
         }
         // Not every turn: opening them walks /dev/input.
@@ -5620,12 +5658,12 @@ fn panel(
                     );
                     // Name what is being agreed to: consenting to an install
                     // without being told what is not consent.
-                    let count = m.apt.len();
+                    let count = m.packages.len();
                     let mut lines = vec![format!(
                         "Install {count} package{}?",
                         if count == 1 { "" } else { "s" }
                     )];
-                    lines.extend(dialog_wrap(&m.apt));
+                    lines.extend(dialog_wrap(&m.packages));
                     dialog = Some(Dialog {
                         lines,
                         left: "Cancel",
@@ -5893,6 +5931,12 @@ fn panel(
         {
             let mut leave = None;
             for event in pending_input.drain(..).chain(pending_remote.drain(..)) {
+                if swallow_release == Some(event.key) {
+                    if !event.down {
+                        swallow_release = None;
+                    }
+                    continue;
+                }
                 if keylog {
                     eprintln!("key            {:?} down={} to {front}", event.key, event.down);
                 }
@@ -6176,7 +6220,14 @@ fn panel(
         // whether the kernel has already delivered the key.
         pending_input.append(&mut pending_remote);
 
+        #[cfg(feature = "wayland")]
+        let mut returning_from_keyboard = false;
         for event in pending_input.drain(..) {
+            #[cfg(feature = "wayland")]
+            if returning_from_keyboard {
+                pending_remote.push(event);
+                continue;
+            }
             // Every key, with the state that decides what happens to it. Behind an
             // environment variable because it is one line per press and the useful
             // question is always "did this reach us at all, and what were we
@@ -6253,8 +6304,16 @@ fn panel(
                     _ => {}
                 }
                 match input.key(event.key, true) {
-                    Some(flipper_ui::keyboard::Exit::Save(text)) => app_kb_done!(Some(text)),
-                    Some(flipper_ui::keyboard::Exit::Cancel) => app_kb_done!(None),
+                    Some(exit) => {
+                        let typed = match exit {
+                            flipper_ui::keyboard::Exit::Save(text) => Some(text),
+                            flipper_ui::keyboard::Exit::Cancel => None,
+                        };
+                        app_kb_done!(typed);
+                        // The foreground app takes the rest of this input batch.
+                        swallow_release = Some(event.key);
+                        returning_from_keyboard = true;
+                    }
                     None => kb_dirty = true,
                 }
                 continue;
@@ -6387,8 +6446,7 @@ fn panel(
 
             // A labelled soft key must do something, or the label is a lie.
             let on_menu_now = screen.get_screen() == Screen::Menu;
-            let labels: &[&str; 5] =
-                if on_menu_now { &demo::SOFT_LABELS } else { &demo::IDLE_LABELS };
+            let labels = if on_menu_now { &demo::SOFT_LABELS } else { &demo::IDLE_LABELS };
             let labelled_soft = slot.is_some_and(|i| !labels[i].is_empty());
 
             // Tab belongs to the system, not to whatever is in front. It is
@@ -7933,7 +7991,9 @@ fn panel(
                             act: DialogAct::Uninstall(at),
                         });
                     }
-                } else if key == FlipperKey::View && screen.get_screen() == Screen::Idle {
+                } else if matches!(key, FlipperKey::View | FlipperKey::Ok)
+                    && screen.get_screen() == Screen::Idle
+                {
                     screen.set_screen(Screen::Menu);
                     eprintln!("screen         menu");
                 } else if key == FlipperKey::Ok && screen.get_screen() == Screen::Menu {
@@ -8144,10 +8204,10 @@ fn panel(
         // only while an app had the panel, which is never true while the deck is open
         // and is the one moment they are looked at.
         #[cfg(all(feature = "wayland", feature = "remote"))]
-        // Nothing is on the panel for us, so nobody reads frames: a backgrounded app
-        // keeps drawing for its own sake and we stop looking.
+        // There is no app frame to show while the shell's keyboard owns the panel.
+        // Keep the cached frame for the handoff and stop requesting new copies.
         #[cfg(feature = "wayland")]
-        if wl_front.is_none() {
+        if wl_front.is_none() || matches!(kb_for, KbFor::App { .. }) {
             for app in wl_apps.iter_mut() {
                 app.session.stream(false);
             }
@@ -8325,15 +8385,14 @@ fn panel(
         if screen.get_screen() == Screen::TextInput {
             if let Some(input) = kb.as_mut() {
                 let cursor_on = input.cursor_visible();
-                if input.animating() || cursor_on != kb_cursor_shown {
-                    kb_dirty = true;
-                }
-                if kb_dirty {
+                if kb_dirty || input.animating() {
                     kb_dirty = false;
-                    kb_cursor_shown = cursor_on;
                     let warning = kb_warning!(input);
                     apply_text_input(&screen, input, &warning, cursor_on);
+                } else if cursor_on != kb_cursor_shown {
+                    screen.set_kb_cursor_on(cursor_on);
                 }
+                kb_cursor_shown = cursor_on;
             }
         }
 

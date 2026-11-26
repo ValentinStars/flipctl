@@ -424,22 +424,22 @@ pub fn parse_manifest(
 /// What an app still needs before it can run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Missing {
-    /// Debian packages that are not installed.
-    pub apt: Vec<String>,
+    /// Packages to install using this system’s package names.
+    pub packages: Vec<String>,
 }
 
 impl Missing {
     pub fn is_empty(&self) -> bool {
-        self.apt.is_empty()
+        self.packages.is_empty()
     }
 
     /// One line for a log, e.g. "2 packages: curl, mpv".
     pub fn summary(&self) -> String {
-        let n = self.apt.len();
+        let n = self.packages.len();
         if n == 0 {
             return String::new();
         }
-        format!("{n} package{}: {}", if n == 1 { "" } else { "s" }, self.apt.join(", "))
+        format!("{n} package{}: {}", if n == 1 { "" } else { "s" }, self.packages.join(", "))
     }
 }
 
@@ -449,6 +449,7 @@ pub enum PackageManager {
     Pacman,
     Apt,
     Dnf,
+    Zypper,
     None,
 }
 
@@ -470,31 +471,63 @@ pub fn which_bin(name: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn detect_package_manager() -> PackageManager {
-    let has_pacman = which_bin("pacman").is_some();
-    let has_apt = which_bin("apt-get").is_some();
-    let is_arch =
-        Path::new("/etc/arch-release").exists() || Path::new("/etc/manjaro-release").exists();
+fn preferred_manager(release: &str) -> Option<PackageManager> {
+    let id = crate::sysinfo::os_release_value(release, "ID").unwrap_or_default();
+    let family = crate::sysinfo::os_release_value(release, "ID_LIKE").unwrap_or_default();
+    std::iter::once(id.as_str()).chain(family.split_whitespace()).find_map(|id| {
+        Some(match id {
+            "arch" | "manjaro" => PackageManager::Pacman,
+            "debian" | "ubuntu" | "raspbian" => PackageManager::Apt,
+            "fedora" | "rhel" | "centos" => PackageManager::Dnf,
+            "suse" | "opensuse" | "opensuse-tumbleweed" | "opensuse-leap" => PackageManager::Zypper,
+            _ => return None,
+        })
+    })
+}
 
-    if is_arch && has_pacman {
-        return PackageManager::Pacman;
+impl PackageManager {
+    fn executable(self) -> Option<PathBuf> {
+        match self {
+            Self::Pacman => which_bin("pacman"),
+            Self::Apt => which_bin("apt-get"),
+            Self::Dnf => which_bin("dnf").or_else(|| which_bin("dnf5")),
+            Self::Zypper => which_bin("zypper"),
+            Self::None => None,
+        }
     }
-    // Check if dpkg status is a real, non-empty database
-    let valid_dpkg =
-        std::fs::metadata("/var/lib/dpkg/status").map(|m| m.len() > 100).unwrap_or(false);
-    if valid_dpkg && (has_apt || which_bin("dpkg-query").is_some()) {
-        return PackageManager::Apt;
+
+    fn package(self, name: &str) -> &str {
+        match self {
+            Self::Pacman => debian_to_pacman_pkg(name),
+            Self::Dnf => match name {
+                "python3-serial" => "python3-pyserial",
+                "libsdl2-2.0-0" => "SDL2",
+                "libsdl2-dev" => "SDL2-devel",
+                "libsdl2-image-2.0-0" => "SDL2_image",
+                "libsdl2-image-dev" => "SDL2_image-devel",
+                "libsdl2-mixer-2.0-0" => "SDL2_mixer",
+                "libsdl2-mixer-dev" => "SDL2_mixer-devel",
+                "libsdl2-ttf-2.0-0" => "SDL2_ttf",
+                "libsdl2-ttf-dev" => "SDL2_ttf-devel",
+                "pipewire-audio-client-libraries" => "pipewire-alsa",
+                _ => name,
+            },
+            _ => name,
+        }
     }
-    if has_pacman {
-        return PackageManager::Pacman;
+}
+
+pub fn detect_package_manager() -> PackageManager {
+    let release = std::fs::read_to_string("/etc/os-release")
+        .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+        .unwrap_or_default();
+    if let Some(manager) = preferred_manager(&release) {
+        return if manager.executable().is_some() { manager } else { PackageManager::None };
     }
-    if has_apt {
-        return PackageManager::Apt;
-    }
-    if which_bin("dnf").is_some() {
-        return PackageManager::Dnf;
-    }
-    PackageManager::None
+    [PackageManager::Pacman, PackageManager::Dnf, PackageManager::Zypper, PackageManager::Apt]
+        .into_iter()
+        .find(|pm| pm.executable().is_some())
+        .unwrap_or(PackageManager::None)
 }
 
 fn debian_to_pacman_pkg(deb: &str) -> &str {
@@ -507,7 +540,7 @@ fn debian_to_pacman_pkg(deb: &str) -> &str {
         "python3-requests" => "python-requests",
         "python3-numpy" => "python-numpy",
         "python3-serial" => "python-pyserial",
-        "libsdl2-2.0-0" | "libsdl2-dev" => "sdl2",
+        "libsdl2-2.0-0" | "libsdl2-dev" => "sdl2-compat",
         "libsdl2-image-2.0-0" | "libsdl2-image-dev" => "sdl2_image",
         "libsdl2-mixer-2.0-0" | "libsdl2-mixer-dev" => "sdl2_mixer",
         "libsdl2-ttf-2.0-0" | "libsdl2-ttf-dev" => "sdl2_ttf",
@@ -521,6 +554,8 @@ fn is_pkg_command_present(pkg: &str) -> bool {
         "python3" | "python" => {
             return which_bin("python3").is_some() || which_bin("python").is_some();
         }
+        "nodejs" => "node",
+        "chromium" => "chromium",
         "curl" => "curl",
         "jq" => "jq",
         "mpv" => "mpv",
@@ -535,60 +570,21 @@ fn is_pkg_command_present(pkg: &str) -> bool {
     which_bin(cmd).is_some()
 }
 
-fn missing_pacman(packages: &[String]) -> Vec<String> {
-    if packages.is_empty() {
-        return Vec::new();
-    }
-    let mut missing = Vec::new();
-    for orig in packages {
-        let mapped = debian_to_pacman_pkg(orig);
-        let out = Command::new("pacman")
-            .arg("-Qq")
-            .arg(mapped)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        let is_installed = match out {
-            Ok(o) => o.status.success() && !o.stdout.is_empty(),
-            Err(_) => false,
-        };
-        if !is_installed {
-            if mapped != orig.as_str() {
-                let out2 = Command::new("pacman")
-                    .arg("-Qq")
-                    .arg(orig)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .output();
-                if let Ok(o) = out2 {
-                    if o.status.success() && !o.stdout.is_empty() {
-                        continue;
-                    }
-                }
-            }
-            missing.push(orig.clone());
-        }
-    }
-    missing
-}
-
-fn missing_dnf(packages: &[String]) -> Vec<String> {
-    if packages.is_empty() {
-        return Vec::new();
-    }
-    let mut missing = Vec::new();
-    for orig in packages {
-        let out = Command::new("rpm")
-            .arg("-q")
-            .arg(orig)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if !out.map(|s| s.success()).unwrap_or(false) {
-            missing.push(orig.clone());
-        }
-    }
-    missing
+fn missing_with(command: &str, args: &[&str], packages: &[String]) -> Vec<String> {
+    packages
+        .iter()
+        .filter(|name| {
+            !Command::new(command)
+                .args(args)
+                .arg("--")
+                .arg(name)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .cloned()
+        .collect()
 }
 
 /// Which of `packages` dpkg does not have installed.
@@ -603,18 +599,26 @@ fn missing_apt(packages: &[String]) -> Vec<String> {
         .stderr(Stdio::null())
         .output();
     let Ok(out) = out else {
-        return Vec::new();
+        return packages.to_vec();
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let installed: Vec<&str> = text
         .lines()
         .filter_map(|l| {
             let (name, status) = l.split_once(' ')?;
-            let name = name.split(':').next()?;
             (status.trim() == "installed").then_some(name)
         })
         .collect();
-    packages.iter().filter(|p| !installed.contains(&p.as_str())).cloned().collect()
+    packages
+        .iter()
+        .filter(|p| {
+            !installed.iter().any(|name| {
+                p.as_str() == *name
+                    || name.split_once(':').is_some_and(|(base, _)| p.as_str() == base)
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// Stop a program and everything it started.
@@ -730,74 +734,65 @@ pub fn missing(entry: &AppEntry) -> Missing {
     if entry.apt.is_empty() {
         return Missing::default();
     }
-    // Fast path: check if package binary is already installed in PATH
-    let to_check: Vec<String> =
-        entry.apt.iter().filter(|p| !is_pkg_command_present(p)).cloned().collect();
-    if to_check.is_empty() {
-        return Missing::default();
-    }
-
     let pm = detect_package_manager();
-    let uninstalled = match pm {
-        PackageManager::Pacman => missing_pacman(&to_check),
-        PackageManager::Apt => missing_apt(&to_check),
-        PackageManager::Dnf => missing_dnf(&to_check),
-        PackageManager::None => Vec::new(),
+    let mut packages: Vec<_> = entry
+        .apt
+        .iter()
+        .filter(|p| !is_pkg_command_present(p))
+        .map(|name| pm.package(name).to_owned())
+        .collect();
+    packages.sort_unstable();
+    packages.dedup();
+    let packages = match pm {
+        PackageManager::Pacman => missing_with("pacman", &["-T"], &packages),
+        PackageManager::Apt => missing_apt(&packages),
+        PackageManager::Dnf | PackageManager::Zypper => {
+            missing_with("rpm", &["-q", "--whatprovides"], &packages)
+        }
+        PackageManager::None => packages,
     };
-    Missing { apt: uninstalled }
+    Missing { packages }
 }
 
-/// Install what an app needs, reporting progress as lines.
-///
-/// Blocking and slow: reaches the network. `log` is called per output line so
-/// a caller can show it while it runs.
+/// Install what an app needs and report progress as lines to the install screen.
 pub fn install(missing: &Missing, mut log: impl FnMut(String)) -> Result<(), String> {
-    if missing.apt.is_empty() {
+    if missing.is_empty() {
         log("done".into());
         return Ok(());
     }
     let pm = detect_package_manager();
+    let program = pm.executable().ok_or_else(|| {
+        format!("Install manually: {} (no supported package manager)", missing.packages.join(" "))
+    })?;
+    let mut command = Command::new("sudo");
+    command.arg(&program);
     match pm {
         PackageManager::Pacman => {
-            log("pacman database check".into());
-            let mapped_pkgs: Vec<String> =
-                missing.apt.iter().map(|p| debian_to_pacman_pkg(p).to_string()).collect();
-            log(format!("pacman: {}", mapped_pkgs.join(" ")));
-            run_logged(
-                Command::new("sudo")
-                    .args(["pacman", "-S", "--noconfirm", "--needed"])
-                    .args(&mapped_pkgs),
-                &mut log,
-            )?;
+            command.args(["-S", "--noconfirm", "--needed"]);
         }
         PackageManager::Apt => {
             log("apt-get update".into());
             run_logged(
                 Command::new("sudo")
-                    .args(["apt-get", "update"])
+                    .arg(&program)
+                    .arg("update")
                     .env("DEBIAN_FRONTEND", "noninteractive"),
                 &mut log,
             )?;
-            log(format!("apt: {}", missing.apt.join(" ")));
-            run_logged(
-                Command::new("sudo")
-                    .args(["apt-get", "install", "-y", "--no-install-recommends"])
-                    .args(&missing.apt)
-                    .env("DEBIAN_FRONTEND", "noninteractive"),
-                &mut log,
-            )?;
+            command
+                .args(["install", "-y", "--no-install-recommends"])
+                .env("DEBIAN_FRONTEND", "noninteractive");
         }
         PackageManager::Dnf => {
-            log(format!("dnf: {}", missing.apt.join(" ")));
-            run_logged(
-                Command::new("sudo").args(["dnf", "install", "-y"]).args(&missing.apt),
-                &mut log,
-            )?;
+            command.args(["install", "-y"]);
         }
-        PackageManager::None => {
-            return Err("No supported package manager found (pacman, apt, dnf)".into());
+        PackageManager::Zypper => {
+            command.args(["--non-interactive", "install"]);
         }
+        PackageManager::None => unreachable!("only supported managers have an executable"),
     }
+    log(format!("{}: {}", program.display(), missing.packages.join(" ")));
+    run_logged(command.arg("--").args(&missing.packages), &mut log)?;
     log("done".into());
     Ok(())
 }
@@ -993,10 +988,23 @@ mod tests {
         let mut m = Missing::default();
         assert!(m.is_empty());
         assert_eq!(m.summary(), "");
-        m.apt = vec!["libfoo".into()];
+        m.packages = vec!["libfoo".into()];
         assert_eq!(m.summary(), "1 package: libfoo");
-        m.apt.push("libbar".into());
+        m.packages.push("libbar".into());
         assert_eq!(m.summary(), "2 packages: libfoo, libbar");
+    }
+
+    #[test]
+    fn package_names_follow_the_declared_distribution_family() {
+        let arch = preferred_manager("ID=vstos\nID_LIKE=\"arch\"").unwrap();
+        assert_eq!(arch, PackageManager::Pacman);
+        assert_eq!(arch.package("python3"), "python");
+        assert_eq!(arch.package("libsdl2-2.0-0"), "sdl2-compat");
+        let fedora = preferred_manager("ID=nobara\nID_LIKE=\"fedora rhel\"").unwrap();
+        assert_eq!(fedora, PackageManager::Dnf);
+        assert_eq!(fedora.package("python3-serial"), "python3-pyserial");
+        assert_eq!(preferred_manager("ID=opensuse-tumbleweed"), Some(PackageManager::Zypper));
+        assert_eq!(preferred_manager("ID=raspbian\nID_LIKE=debian"), Some(PackageManager::Apt));
     }
 
     /// The window's owner is a grandchild of what flipctl started, so the chain

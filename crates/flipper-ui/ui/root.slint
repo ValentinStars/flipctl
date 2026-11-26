@@ -51,6 +51,7 @@ export component Root inherits Window {
     in property <int> battery_temp: -32768;
     in property <int> cpu_temp: -32768;
     in property <int> power_mw: -32768;
+    in property <string> uptime;
     in property <string> hostname;
     in property <string> profile;
     in property <bool> has_profile: true;
@@ -243,6 +244,7 @@ export component Root inherits Window {
         battery_temp: root.battery_temp;
         cpu_temp: root.cpu_temp;
         power_mw: root.power_mw;
+        uptime: root.uptime;
         hostname: root.hostname;
         profile: root.profile;
         has_profile: root.has_profile;

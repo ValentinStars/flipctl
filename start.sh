@@ -5,31 +5,31 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+arch=$(uname -m)
+desktop="$PWD/target/desktop-apps/$arch"
 built_binary=
 if [[ "${1:-}" == build ]]; then
     shift
-    export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
-    cargo build --locked --bin flipctl --target-dir "$PWD/target"
-    built_binary="$PWD/target/debug/flipctl"
-    app_dir="$PWD/target/desktop-apps"
-    mkdir -p "$app_dir/debug"
-    for app in hello disk-benchmark sysmon tone-lab browser radio recorder speedtest; do
-        case "$app" in
-            hello|disk-benchmark) app_target="$app_dir" ;;
-            *) app_target="$PWD/target" ;;
-        esac
-        cargo build --locked --manifest-path "apps/$app/Cargo.toml" --target-dir "$app_target"
-        if [[ "$app_target" != "$app_dir" && ! "$app_target/debug/$app-app" -ef "$app_dir/debug/$app-app" ]]; then
-            ln -f -- "$app_target/debug/$app-app" "$app_dir/debug/$app-app"
+    build_target=native
+    if [[ "${1:-}" == --target ]]; then
+        if [[ $# -lt 2 ]]; then
+            echo "Missing desktop build target after --target." >&2
+            exit 2
         fi
-    done
-    if command -v npm >/dev/null; then
-        npm install --prefix "$PWD/target/desktop-apps/node" --ignore-scripts --no-save \
-            --package-lock=false --no-audit --no-fund slint-ui@1.17.1
+        build_target="$2"
+        shift 2
     fi
+    if [[ $# -ne 0 ]]; then
+        case "$arch:$build_target" in
+            *:native|*:all|x86_64:amd64|x86_64:x86_64|aarch64:arm64|aarch64:aarch64) ;;
+            *) echo "Build the host target as well to launch on $arch." >&2; exit 2 ;;
+        esac
+    fi
+    ./tools/build-desktop.sh "$build_target"
     if [[ $# -eq 0 ]]; then
         exit 0
     fi
+    built_binary="$desktop/flipctl"
 fi
 
 case "${1:-}" in
@@ -38,20 +38,33 @@ case "${1:-}" in
     panel) mode=panel; shift ;;
     -h|--help)
         echo "Usage: ./start.sh [gui|lan|panel] [FlipCTL options]"
-        echo "       ./start.sh build [gui|lan] [FlipCTL options]"
+        echo "       ./start.sh build [--target native|amd64|arm64|all] [gui|lan] [FlipCTL options]"
         echo "Example: ./start.sh gui --output HDMI-A-1"
         exit 0
         ;;
     *) mode=auto ;;
 esac
 
+native_binary() {
+    local expected
+    case "$arch" in
+        x86_64) expected=62 ;;
+        aarch64) expected=183 ;;
+        *) return 1 ;;
+    esac
+    [[ -x "$1" ]] && [[ $(od -An -j18 -N2 -tu2 -- "$1") =~ ^[[:space:]]*$expected$ ]]
+}
+
 if [[ -n "${FLIPCTL_BIN:-}" ]]; then
     binary="$FLIPCTL_BIN"
 elif [[ -n "$built_binary" ]]; then
     binary="$built_binary"
-elif [[ -x ./target/release/flipctl && ! ./target/debug/flipctl -nt ./target/release/flipctl ]]; then
+elif native_binary "$desktop/flipctl"; then
+    binary="$desktop/flipctl"
+elif native_binary ./target/release/flipctl &&
+    { ! native_binary ./target/debug/flipctl || [[ ! ./target/debug/flipctl -nt ./target/release/flipctl ]]; }; then
     binary=./target/release/flipctl
-elif [[ -x ./target/debug/flipctl ]]; then
+elif native_binary ./target/debug/flipctl; then
     binary=./target/debug/flipctl
 elif command -v cargo >/dev/null; then
     cargo build --locked --release --bin flipctl
@@ -83,11 +96,19 @@ if [[ "$mode" != panel ]]; then
     fi
     python_runtime=
     node_runtime=
-    if python3 -c 'import slint' 2>/dev/null; then
+    python_modules="$PWD/apps/python-runtime"
+    if [[ -d "$desktop/python/slint" ]]; then
+        python_modules="$python_modules:$desktop/python"
+    fi
+    if PYTHONPATH="$python_modules${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'import slint' 2>/dev/null; then
         python_runtime="$PWD/apps/python-runtime/AppRun"
     fi
-    node_modules="$PWD/target/desktop-apps/node/node_modules"
-    if [[ -d "$node_modules/slint-ui" ]] && command -v node >/dev/null; then
+    node_modules="$desktop/node/node_modules"
+    if [[ ! -d "$node_modules" ]]; then
+        node_modules="$PWD/target/desktop-apps/node/node_modules"
+    fi
+    if [[ -d "$node_modules/slint-ui" ]] &&
+        NODE_PATH="$node_modules" node -e 'require("slint-ui")' 2>/dev/null; then
         node_runtime="$PWD/apps/js-runtime/AppRun"
     fi
     if [[ -n "$python_runtime$node_runtime" ]]; then
@@ -101,7 +122,7 @@ if [[ "$mode" != panel ]]; then
             export FLIPCTL_UI="$PWD"
             if [[ -n "$python_runtime" ]]; then
                 export FLIPCTL_SOURCE_PYTHON="$python_runtime"
-                export PYTHONPATH="$PWD/apps/python-runtime${PYTHONPATH:+:$PYTHONPATH}"
+                export PYTHONPATH="$python_modules${PYTHONPATH:+:$PYTHONPATH}"
                 export SLINT_BACKEND="${SLINT_BACKEND:-winit-software}"
             fi
             if [[ -n "$node_runtime" ]]; then

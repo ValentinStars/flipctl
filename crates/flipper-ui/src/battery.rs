@@ -1,20 +1,15 @@
-//! The battery pack as the fuel gauge last announced it.
+//! Battery properties for both the Flipper One gauge and desktop batteries.
 //!
-//! Every read of the gauge's sysfs is an I2C transaction: the bq27xxx driver caches
-//! only capacity and flags, and goes to the chip for temperature, power, current and
-//! the rest each time, on the bus the Type-C controller needs during an attach. So
-//! nothing here reads it. The kernel builds each `power_supply` uevent from every
-//! property at once, whoever listens, and that snapshot is kept.
-//!
-//! The gauge announces a change in capacity, flags or charging state, found on its
-//! own poll or half a second after the charger reports one. Between those the
-//! numbers stand still. The one read of the gauge is at startup, through its
-//! `uevent` file, which costs what one announcement does.
+//! The Flipper One gauge shares an I2C bus with the Type-C controller. Read its
+//! sysfs once at startup, then use the snapshots in power_supply uevents.
+//! Other gauges, including ACPI laptop batteries, can update sysfs without
+//! broadcasting a change, so refresh their snapshot periodically.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::netlink::Socket;
 
@@ -32,12 +27,52 @@ fn cell() -> &'static Mutex<Option<Arc<Props>>> {
     LATEST.get_or_init(|| Mutex::new(None))
 }
 
-/// The pack's last snapshot, or None with no gauge. The first call starts the
-/// listener and reads the gauge once.
+enum Source {
+    Gauge,
+    Polled(Mutex<Polled>),
+}
+
+#[derive(Default)]
+struct Polled {
+    checked: Option<Instant>,
+    pack: Option<Arc<Props>>,
+}
+
+impl Polled {
+    fn latest(&mut self, supplies: &Path, now: Instant) -> Option<Arc<Props>> {
+        const INTERVAL: Duration = Duration::from_secs(2);
+        if self.checked.is_none_or(|checked| now.duration_since(checked) >= INTERVAL) {
+            self.pack = pack_dir(supplies).and_then(|dir| read_uevent_file(&dir)).map(Arc::new);
+            self.checked = Some(now);
+        }
+        self.pack.clone()
+    }
+}
+
+fn uses_uevents(dir: &Path) -> bool {
+    dir.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        ["bq28z610", "bq28x610", "bq28z620"].iter().any(|prefix| name.starts_with(prefix))
+    })
+}
+
+/// The latest battery snapshot, or None when no battery is available.
 pub fn latest() -> Option<Arc<Props>> {
-    static STARTED: OnceLock<()> = OnceLock::new();
-    STARTED.get_or_init(start);
-    cell().lock().ok()?.clone()
+    static SOURCE: OnceLock<Source> = OnceLock::new();
+    let supplies = Path::new(SUPPLIES);
+    match SOURCE.get_or_init(|| {
+        if let Some(dir) = pack_dir(supplies).filter(|dir| uses_uevents(dir)) {
+            start(&dir);
+            Source::Gauge
+        } else {
+            Source::Polled(Mutex::default())
+        }
+    }) {
+        Source::Gauge => cell().lock().ok()?.clone(),
+        Source::Polled(poll) => {
+            let mut poll = poll.lock().ok()?;
+            poll.latest(supplies, Instant::now())
+        }
+    }
 }
 
 /// One property of the last snapshot.
@@ -56,10 +91,10 @@ fn store(props: Option<Props>) {
     }
 }
 
-fn start() {
+fn start(dir: &Path) {
     // Subscribed before the gauge is read, so an announcement in between is not lost.
     let socket = Socket::subscribe(KOBJECT_UEVENT, UEVENT_KERNEL);
-    store(read_pack());
+    store(read_uevent_file(dir));
     let socket = match socket {
         Ok(socket) => socket,
         Err(e) => {
@@ -90,19 +125,15 @@ fn start() {
     }
 }
 
-/// The gauge's directory: the one supply whose type is Battery. Its driver has been
-/// called both bq28z610 and bq28z620. `type` comes from the driver's description,
-/// not the chip.
-fn pack_dir() -> Option<PathBuf> {
-    std::fs::read_dir(SUPPLIES)
+fn pack_dir(supplies: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(supplies)
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .find(|dir| std::fs::read_to_string(dir.join("type")).is_ok_and(|t| t.trim() == "Battery"))
-}
-
-fn read_pack() -> Option<Props> {
-    read_uevent_file(&pack_dir()?)
+        .filter(|dir| {
+            std::fs::read_to_string(dir.join("type")).is_ok_and(|t| t.trim() == "Battery")
+        })
+        .find(|dir| !std::fs::read_to_string(dir.join("scope")).is_ok_and(|s| s.trim() == "Device"))
 }
 
 fn read_uevent_file(dir: &Path) -> Option<Props> {
@@ -181,6 +212,29 @@ mod tests {
         assert_eq!(pack_event(&typec), None);
         let gone = event(&["ACTION=remove", "SUBSYSTEM=power_supply", "POWER_SUPPLY_TYPE=Battery"]);
         assert_eq!(pack_event(&gone), Some(Event::Removed));
+    }
+
+    #[test]
+    fn laptop_percent_refreshes_without_a_uevent() {
+        let supplies =
+            std::env::temp_dir().join(format!("flipper-battery-poll-{}", std::process::id()));
+        let dir = supplies.join("BAT0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("type"), "Battery\n").unwrap();
+        let write_capacity = |level| {
+            std::fs::write(dir.join("uevent"), format!("POWER_SUPPLY_CAPACITY={level}\n")).unwrap();
+        };
+        let now = Instant::now();
+        let mut poll = Polled::default();
+        write_capacity(53);
+        assert_eq!(poll.latest(&supplies, now).unwrap()["capacity"], "53");
+        write_capacity(37);
+        assert_eq!(poll.latest(&supplies, now + Duration::from_secs(1)).unwrap()["capacity"], "53");
+        assert_eq!(poll.latest(&supplies, now + Duration::from_secs(2)).unwrap()["capacity"], "37");
+        std::fs::remove_dir_all(&supplies).unwrap();
+        assert!(poll.latest(&supplies, now + Duration::from_secs(4)).is_none());
+        assert!(uses_uevents(Path::new("/sys/class/power_supply/bq28z620-0")));
+        assert!(!uses_uevents(&dir));
     }
 
     #[test]

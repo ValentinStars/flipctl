@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool};
+use wayland_client::protocol::{
+    wl_buffer, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+};
 use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, QueueHandle};
 #[cfg(feature = "gpu")]
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
@@ -39,6 +41,12 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
+use wayland_protocols_wlr::virtual_pointer::v1::client::{
+    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+};
+
+use crate::wl_sink::AppPointer;
 
 /// How often a hosted app's own output refreshes, in Hz.
 ///
@@ -140,6 +148,8 @@ pub struct Session {
     /// this is a client of it.
     app: Child,
     keyboard: ZwpVirtualKeyboardV1,
+    pointer: Option<ZwlrVirtualPointerV1>,
+    pointer_down: bool,
     started: Instant,
     conn: Connection,
     frames: Arc<Frames>,
@@ -578,6 +588,7 @@ impl Session {
             #[cfg(feature = "gpu")]
             offered: None,
         };
+        let mut pointers = None;
         for g in globals.contents().clone_list() {
             match g.interface.as_str() {
                 "wl_output" => {
@@ -606,6 +617,14 @@ impl Session {
                     state.keyboards =
                         Some(globals.registry().bind(g.name, 1.min(g.version), &qh, ()))
                 }
+                "zwlr_virtual_pointer_manager_v1" if g.version >= 2 => {
+                    pointers = Some(globals.registry().bind::<ZwlrVirtualPointerManagerV1, _, _>(
+                        g.name,
+                        2,
+                        &qh,
+                        (),
+                    ));
+                }
                 _ => {}
             }
         }
@@ -625,6 +644,11 @@ impl Session {
 
         conn.roundtrip().map_err(io::Error::other)?;
         queue.roundtrip(&mut state).map_err(io::Error::other)?;
+        let pointer = pointers.and_then(|manager| {
+            let (target, _) =
+                state.outputs.iter().find(|(_, name)| name.as_deref() == Some(output))?;
+            Some(manager.create_virtual_pointer_with_output(Some(&seat), Some(target), &qh, ()))
+        });
 
         // `exec` where the command allows it, so the shell is replaced by the program
         // rather than waiting on it. Two things depend on that: the pid we hold is the
@@ -711,6 +735,8 @@ impl Session {
         Ok(Self {
             app,
             keyboard,
+            pointer,
+            pointer_down: false,
             started: Instant::now(),
             conn,
             frames,
@@ -758,9 +784,39 @@ impl Session {
         let _ = self.conn.flush();
     }
 
+    pub fn supports_pointer(&self) -> bool {
+        self.pointer.is_some()
+    }
+
+    pub fn pointer(&mut self, event: AppPointer, size: (u32, u32)) {
+        let Some(pointer) = &self.pointer else { return };
+        let ms = self.started.elapsed().as_millis() as u32;
+        match event {
+            AppPointer::Motion(x, y) | AppPointer::Press(x, y) => {
+                let Some((x, y)) = crate::scale::source_point((x, y), size) else { return };
+                pointer.motion_absolute(ms, x, y, size.0, size.1);
+                if matches!(event, AppPointer::Press(..)) && !self.pointer_down {
+                    pointer.button(ms, 0x110, wl_pointer::ButtonState::Pressed);
+                    self.pointer_down = true;
+                }
+            }
+            AppPointer::Release if self.pointer_down => {
+                pointer.button(ms, 0x110, wl_pointer::ButtonState::Released);
+                self.pointer_down = false;
+            }
+            AppPointer::Release => return,
+        }
+        pointer.frame();
+        let _ = self.conn.flush();
+        self.stir();
+    }
+
     /// Read frames continuously, or stop. Set for the app on the panel and cleared
     /// when it leaves, so a backgrounded app costs nothing.
     pub fn stream(&mut self, on: bool) {
+        if !on && self.pointer_down {
+            self.pointer(AppPointer::Release, (0, 0));
+        }
         if self.streaming == on {
             return;
         }
@@ -1231,6 +1287,8 @@ delegate_noop!(State: ignore wl_buffer::WlBuffer);
 delegate_noop!(State: ignore ZwlrScreencopyManagerV1);
 delegate_noop!(State: ignore ZwpVirtualKeyboardManagerV1);
 delegate_noop!(State: ignore ZwpVirtualKeyboardV1);
+delegate_noop!(State: ignore ZwlrVirtualPointerManagerV1);
+delegate_noop!(State: ignore ZwlrVirtualPointerV1);
 #[cfg(feature = "gpu")]
 delegate_noop!(State: ignore ZwpLinuxDmabufV1);
 #[cfg(feature = "gpu")]

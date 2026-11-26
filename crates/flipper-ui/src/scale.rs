@@ -12,6 +12,24 @@
 
 use crate::pixel::Gray8;
 
+fn fit_bounds(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32, u32, u32) {
+    let (w, h) =
+        if sw * dh > dw * sh { (dw, (sh * dw / sw).max(1)) } else { ((sw * dh / sh).max(1), dh) };
+    ((dw - w) / 2, (dh - h) / 2, w, h)
+}
+
+#[cfg(feature = "wayland")]
+pub(crate) fn source_point((x, y): (u32, u32), (sw, sh): (u32, u32)) -> Option<(u32, u32)> {
+    if sw == 0 || sh == 0 {
+        return None;
+    }
+    let (ox, oy, w, h) = fit_bounds(sw, sh, u32::from(crate::PANEL_W), u32::from(crate::PANEL_H));
+    if !(ox..ox + w).contains(&x) || !(oy..oy + h).contains(&y) {
+        return None;
+    }
+    Some(((x - ox) * sw / w, (y - oy) * sh / h))
+}
+
 /// Scale `src` to fit `dw` by `dh`, centred, keeping its aspect ratio.
 ///
 /// `dst` is not cleared: the fitted image lands in the middle and whatever the
@@ -27,9 +45,7 @@ pub fn fit(src: &[Gray8], sw: u32, sh: u32, dst: &mut [Gray8], dw: u32, dh: u32)
     // Whole-pixel arithmetic: the largest box that fits, then the offset that
     // centres it. Anything else puts the image half a pixel off and blurs a panel
     // whose pixels are individually visible.
-    let (w, h) =
-        if sw * dh > dw * sh { (dw, (sh * dw / sw).max(1)) } else { ((sw * dh / sh).max(1), dh) };
-    let (ox, oy) = ((dw - w) / 2, (dh - h) / 2);
+    let (ox, oy, w, h) = fit_bounds(sw, sh, dw, dh);
 
     for y in 0..h {
         // The source rows this destination row covers, at least one.
@@ -80,9 +96,7 @@ pub fn fit_from_xrgb(
         return;
     }
 
-    let (w, h) =
-        if sw * dh > dw * sh { (dw, (sh * dw / sw).max(1)) } else { ((sw * dh / sh).max(1), dh) };
-    let (ox, oy) = ((dw - w) / 2, (dh - h) / 2);
+    let (ox, oy, w, h) = fit_bounds(sw, sh, dw, dh);
 
     for y in 0..h {
         let y0 = y * sh / h;
@@ -113,6 +127,16 @@ pub fn fit_from_xrgb(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "wayland")]
+    #[test]
+    fn pointer_position_uses_the_same_fit_as_the_app_frame() {
+        let (width, height) = (u32::from(crate::PANEL_W), u32::from(crate::PANEL_H));
+        let center = (width / 2, height / 2);
+        assert_eq!(super::source_point(center, (width, height)), Some(center));
+        assert_eq!(super::source_point((12, 1), (320, 200)), None);
+        assert_eq!(super::source_point((13, 0), (320, 200)), Some((0, 0)));
+        assert_eq!(super::source_point(((width - height) / 2, 0), (height, height)), Some((0, 0)));
+    }
     use super::fit;
     use crate::pixel::Gray8;
 

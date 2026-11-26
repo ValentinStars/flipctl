@@ -24,6 +24,7 @@ wayland = [
     "dep:serde",
     "dep:serde_json",
     "dep:wayland-client",
+    "dep:wayland-cursor",
     "dep:wayland-protocols",
     "dep:wayland-protocols-wlr",
     "dep:wayland-protocols-misc",
@@ -79,7 +80,8 @@ libloading = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 wayland-client = { version = "0.31", optional = true }
-wayland-protocols = { version = "0.32", features = ["client"], optional = true }
+wayland-cursor = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"], optional = true }
 wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }
 wayland-protocols-misc = { version = "0.3", features = ["client"], optional = true }
 

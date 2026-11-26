@@ -8,7 +8,7 @@
 //! the file. The folder is where a person puts anything, and the scan runs inside a
 //! unit that can reach the GPIO and USB, so a bundle is not executed to find out what
 //! it is. What was read is kept beside a stamp of the file's size and mtime, and an
-//! unchanged file is not opened again: the steady state is one `stat` per bundle.
+//! unchanged file's architecture is checked and its cached manifest reused.
 //!
 //! There are two folders, not one. The image ships its apps in a folder of its own,
 //! which updates with the profile; the user's `Apps` is where anything they add
@@ -16,6 +16,7 @@
 //! survives a factory reset, which is the reason the apps moved there.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::app::{self, AppEntry};
@@ -74,6 +75,8 @@ pub fn cache_dir(key: &str) -> PathBuf {
 pub enum Skip {
     /// Not an AppImage at all, whatever it is called.
     NotAppImage,
+    /// An ELF executable for a different CPU.
+    WrongArchitecture,
     /// A file with no manifest of ours: a stock AppImage, or somebody's script.
     NotOurs,
     /// Could not be read; the text says why.
@@ -113,6 +116,9 @@ pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
         let mut here = Vec::new();
         walk(root, root, &[], &mut here);
         for (path, key, group) in here {
+            if found.contains_key(&key) && is_bundle(&path) && foreign_elf(&path) {
+                continue;
+            }
             found.insert(key, (path, group));
         }
     }
@@ -128,7 +134,11 @@ pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
         }
     }
     if let Some(source) = source_root() {
-        let local: Vec<_> = source_apps(&source).collect();
+        let local: Vec<_> = source_apps(&source)
+            .filter(|entry| {
+                entry.key != "source-doom" || !apps.iter().any(|app| app.name == entry.name)
+            })
+            .collect();
         apps.retain(|entry| {
             entry.provides.is_empty() || !local.iter().any(|app| app.provides == entry.provides)
         });
@@ -161,6 +171,7 @@ fn source_apps(source: &Path) -> impl Iterator<Item = AppEntry> + '_ {
             // These wrappers need only the assets in the checkout and system tools.
             let ready = match name.as_str() {
                 "dither-test" | "video-player" => true,
+                "doom" => cfg!(target_arch = "aarch64"),
                 "python-runtime" => {
                     std::env::var_os("FLIPCTL_SOURCE_PYTHON").as_deref() == Some(run.as_os_str())
                 }
@@ -174,14 +185,23 @@ fn source_apps(source: &Path) -> impl Iterator<Item = AppEntry> + '_ {
             }
             run
         } else {
-            source.join("target/desktop-apps/debug").join(binary)
+            let artifacts = source.join("target/desktop-apps");
+            [artifacts.join(std::env::consts::ARCH), artifacts.join("debug")]
+                .into_iter()
+                .map(|dir| dir.join(binary))
+                .find(|path| path.is_file() && !foreign_elf(path))?
         };
         if !launch.is_file() {
             return None;
         }
         let group: Vec<_> = app::py_string(&manifest, "folder").into_iter().collect();
         let key = format!("source-{name}");
-        app::parse_manifest(&manifest, name, &group, dir, launch, key)
+        let portable_doom = name == "doom" && cfg!(target_arch = "aarch64");
+        let mut entry = app::parse_manifest(&manifest, name, &group, dir, launch, key)?;
+        if portable_doom {
+            entry.apt.extend(["dsda-doom".into(), "freedoom".into()]);
+        }
+        Some(entry)
     })
 }
 
@@ -208,6 +228,27 @@ fn walk(dir: &Path, root: &Path, group: &[String], out: &mut Vec<(PathBuf, Strin
             out.push((path, key, group.to_vec()));
         }
     }
+}
+
+fn foreign_elf(path: &Path) -> bool {
+    let native = match std::env::consts::ARCH {
+        "x86_64" => 62,
+        "aarch64" => 183,
+        "arm" => 40,
+        _ => return false,
+    };
+    let mut header = [0u8; 20];
+    if fs::File::open(path).and_then(|mut file| file.read_exact(&mut header)).is_err()
+        || !header.starts_with(b"\x7fELF")
+    {
+        return false;
+    }
+    let machine = match header[5] {
+        1 => u16::from_le_bytes([header[18], header[19]]),
+        2 => u16::from_be_bytes([header[18], header[19]]),
+        _ => return false,
+    };
+    machine != 0 && machine != native
 }
 
 /// Whether this is a file the squashfs reader reads.
@@ -320,6 +361,9 @@ mod imp {
     }
 
     pub fn read_keyed(path: &Path, key: &str, group: &[String]) -> Result<AppEntry, Skip> {
+        if super::foreign_elf(path) {
+            return Err(Skip::WrongArchitecture);
+        }
         let meta = fs::metadata(path).map_err(|e| Skip::Unreadable(e.to_string()))?;
         if !meta.is_file() {
             return Err(Skip::NotAppImage);
@@ -359,6 +403,7 @@ mod imp {
                 Stamp::of(&meta, Kind::Bogus).write(&dir);
                 crate::logline!("bundles        {key}: not an AppImage, skipped");
             }
+            Err(Skip::WrongArchitecture) => {}
             Err(Skip::Unreadable(why)) => {
                 crate::logline!("bundles        {key}: {why}");
             }

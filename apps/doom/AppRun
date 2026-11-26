@@ -6,10 +6,8 @@
 # it the panel's real shape. screenblocks 10 keeps the engine's own status bar,
 # because the compact overlay HUD is too small to read at 144 lines.
 #
-# Nothing is installed to run this. The engine, the game data and the seventy-nine
-# Debian packages they need are unpacked into the bundle at build time from
-# deb.lock, and the loader is pointed at them here, so Doom runs on a device that
-# has never seen apt.
+# The device bundle carries the engine, game data and dependencies from deb.lock.
+# The source launch uses an installed dsda-doom and Freedoom when there is no bundle.
 #
 # The palette is corrected for a panel of black ink on an orange ground, which the
 # engine's own colours are not made for. Tone Lab is where that curve was
@@ -62,17 +60,28 @@ input_map                       98 -1 -1 | 0 -1 -1 | 0 -1 -1
 input_menu_escape               97 -1 -1 | 0 -1 -1 | 0 -1 -1
 CFGEOF
 
-# The bundle's own libraries come first. glibc is the device's, because the loader
-# the kernel runs is named in the binary and has to match the libc beside it, and so
-# is mesa's libgbm, which every device that runs flipctl already has.
-export LD_LIBRARY_PATH="$RUNTIME/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# Where the engine looks for its own resource wad, since it is no longer at the
-# compiled-in path.
-export DOOMWADPATH="$RUNTIME/usr/share/dsda-doom:$RUNTIME/usr/share/games/doom"
+if [ -x "$RUNTIME/usr/games/dsda-doom" ]; then
+    engine="$RUNTIME/usr/games/dsda-doom"
+    iwad="$RUNTIME/usr/share/games/doom/freedoom1.wad"
+    export LD_LIBRARY_PATH="$RUNTIME/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export DOOMWADPATH="$RUNTIME/usr/share/dsda-doom:$RUNTIME/usr/share/games/doom"
+else
+    engine=$(command -v dsda-doom || true)
+    [ -n "$engine" ] || engine=/usr/games/dsda-doom
+    [ -x "$engine" ] || { echo "Doom needs dsda-doom for this architecture." >&2; exit 1; }
+    iwad=""
+    for dir in "${DOOMWADDIR:-/usr/share/games/doom}" /usr/share/games/doom /usr/share/doom; do
+        if [ -r "$dir/freedoom1.wad" ]; then
+            iwad="$dir/freedoom1.wad"
+            break
+        fi
+    done
+    [ -n "$iwad" ] || { echo "Doom needs the Freedoom data (freedoom1.wad)." >&2; exit 1; }
+fi
 
-exec "$RUNTIME/usr/games/dsda-doom" \
+exec "$engine" \
     -config "$CFG" \
-    -iwad "$RUNTIME/usr/share/games/doom/freedoom1.wad" \
+    -iwad "$iwad" \
     -file "$PALETTE" \
     -aspect 16:9 \
     -fullscreen \

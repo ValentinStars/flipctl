@@ -316,6 +316,7 @@ pub struct Idle {
     pub cpu_temp: Option<i32>,
     /// Milliwatts. Positive is flowing into the battery.
     pub power_mw: Option<i32>,
+    pub uptime: String,
     pub hostname: String,
     /// Booted btrfs subvolume with its leading `@` dropped, as the prototype
     /// displays it.
@@ -344,7 +345,13 @@ impl Idle {
         let before = (self.battery_temp, self.cpu_temp);
         self.battery_temp = battery_temp();
         self.cpu_temp = cpu_temp();
-        before != (self.battery_temp, self.cpu_temp)
+        let uptime = read("/proc/uptime")
+            .and_then(|value| value.split_whitespace().next()?.parse::<f64>().ok())
+            .map(|secs| crate::sysinfo::uptime(secs as u64))
+            .unwrap_or_default();
+        let uptime_changed = self.uptime != uptime;
+        self.uptime = uptime;
+        uptime_changed || before != (self.battery_temp, self.cpu_temp)
     }
 
     /// Interface addresses, every few seconds: a cable or a DHCP renewal changes
@@ -412,19 +419,32 @@ fn battery_temp() -> Option<i32> {
 /// littlecore, gpu, npu and ddr zones, plus a `bq28x610-0` zone that duplicates
 /// the battery.
 fn cpu_temp() -> Option<i32> {
-    zone_temp("package-thermal").or_else(|| {
-        // Any zone whose type mentions the package, as the prototype falls back
-        // to: zone indices move between kernels but the type does not.
-        let entries = std::fs::read_dir("/sys/class/thermal").ok()?;
-        for entry in entries.flatten() {
-            let dir = entry.path();
-            if !read(dir.join("type"))?.contains("package") {
-                continue;
+    ["package-thermal", "cpu-thermal", "cpu_thermal", "x86_pkg_temp"]
+        .into_iter()
+        .find_map(zone_temp)
+        .or_else(|| {
+            // Any zone whose type mentions the package, as the prototype falls back
+            // to: zone indices move between kernels but the type does not.
+            let entries = std::fs::read_dir("/sys/class/thermal").ok()?;
+            for entry in entries.flatten() {
+                let dir = entry.path();
+                if !read(dir.join("type")).is_some_and(|kind| kind.contains("package")) {
+                    continue;
+                }
+                return Some(tenths_from_milli(read(dir.join("temp"))?.parse().ok()?));
             }
-            return Some(tenths_from_milli(read(dir.join("temp"))?.parse().ok()?));
-        }
-        None
-    })
+            None
+        })
+        .or_else(|| {
+            std::fs::read_dir("/sys/class/hwmon").ok()?.flatten().find_map(|entry| {
+                let dir = entry.path();
+                let name = read(dir.join("name"))?;
+                if !matches!(name.as_str(), "k10temp" | "zenpower" | "coretemp") {
+                    return None;
+                }
+                Some(tenths_from_milli(read(dir.join("temp1_input"))?.parse().ok()?))
+            })
+        })
 }
 
 /// Power into or out of the battery, in milliwatts, from the charger's ADCs.
