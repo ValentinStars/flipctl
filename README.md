@@ -151,8 +151,8 @@ Down and Up by 5 dB, and **X** switches between Auto and Manual. **B** applies
 either edit.
 
 From settings, **B** reviews the frequency, input and transmission settings.
-Press **V** on the review to start. **Z** stops transmission, and **X** shows
-device information from settings. During single-source playback, **X** shows
+Press **V** on the review to start. **Z** or **Back** stops transmission.
+**X** shows device information from settings. During single-source playback, **X** shows
 the log and **B** also stops transmission.
 
 Folder playback shuffles its tracks once per run. During playlist
@@ -221,7 +221,8 @@ ExecStart=/usr/bin/python3 /path/to/waveshare_st7735.py --host 192.168.1.50 --po
 | Flipper Button | Keyboard Key | Waveshare HAT | Action |
 |---|---|---|---|
 | **OK** | `Return` / `Enter` | Key 1 / Joy Press | Open / Confirm |
-| **Back** | `Escape` / `Backspace` | Key 2 | Back / Exit app |
+| **Back** | `Backspace` | Key 2 | Back one level or leave the app |
+| **Z** | `Z` / `Escape` | — | Go Home, cancel, or close the current view |
 | **Menu** | `Tab` / `m` | Key 3 | App Switcher / Menu |
 | **D-Pad Up** | `Up Arrow` | Joy Up | Move cursor up |
 | **D-Pad Down** | `Down Arrow` | Joy Down | Move cursor down |
@@ -237,8 +238,13 @@ To pull updates from the original `flipperdevices/flipctl-slint` repository:
 ```bash
 git remote add upstream https://github.com/flipperdevices/flipctl-slint.git
 git fetch upstream
-git merge upstream/dev
+git switch -c integrate/upstream-dev main
+git merge --no-ff upstream/dev
+sh ci/test.sh
 ```
+
+Keep the upstream merge as a separate commit and review integration fixes on top.
+The merge preserves the common ancestor for the next update.
 
 ---
 
