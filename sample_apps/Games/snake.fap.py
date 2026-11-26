@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # /// flipctl
 # name = "Snake"
-# status = true
-# audio = true
+# status = false
 # runtime = ""
 # ///
 """Classic Retro Snake for FlipCTL.

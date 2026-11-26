@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # /// flipctl
 # name = "Tetris"
-# status = true
-# audio = true
+# status = false
 # runtime = ""
 # ///
 """Classic Retro Tetris for FlipCTL.

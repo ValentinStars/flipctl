@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # /// flipctl
 # name = "Minesweeper"
-# status = true
-# audio = true
+# status = false
 # runtime = ""
 # ///
 """Retro Minesweeper for FlipCTL.
