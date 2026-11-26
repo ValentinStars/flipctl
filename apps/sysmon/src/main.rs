@@ -27,7 +27,7 @@ const TICK: Duration = Duration::from_secs(1);
 const HISTORY: usize = 248;
 
 /// Rows a list body shows at once.
-const WINDOW: usize = 8;
+const WINDOW: usize = theme::count::DETAIL_VISIBLE_ROWS_BARE as usize;
 
 const PANEL_W: usize = theme::PANEL_W as usize;
 /// The system's status bar owns the rows above this, and its soft buttons the
@@ -632,10 +632,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let mut m = pressed.borrow_mut();
         let was = m.page;
         match key {
-            // Back, which flipctl keeps for itself when it hosts the app: hosted, this
-            // arm never runs and leaving is flipctl's.
+            // The pages are tabs rather than steps, so Back has none to go back.
             Key::Back => {
-                let _ = slint::quit_event_loop();
+                flipctl_app::leave();
                 return;
             }
             Key::Escape => m.page = Page::Cpu,

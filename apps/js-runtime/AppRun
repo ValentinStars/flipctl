@@ -7,17 +7,27 @@
 set -eu
 APPDIR=${APPDIR:-$(cd "$(dirname "$0")" && pwd)}
 export APPDIR
-export FLIPCTL_UI="$APPDIR/usr/share/flipctl-ui"
+if [ -d "$APPDIR/usr/share/flipctl-ui" ]; then
+    export FLIPCTL_UI="$APPDIR/usr/share/flipctl-ui"
+    unset FLIPCTL_THEME
+    carried="$APPDIR/usr/lib/node/node_modules"
+    launcher="$APPDIR/usr/lib/node/launcher.js"
+else
+    export FLIPCTL_UI="${FLIPCTL_UI:-$(cd "$APPDIR/../.." && pwd)}"
+    carried="$APPDIR${FLIPCTL_NODE_MODULES:+:$FLIPCTL_NODE_MODULES}"
+    launcher="$APPDIR/launcher.js"
+    unset DISPLAY
+    export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+fi
 # FemtoVG, not the software renderer our Rust apps compile in: this addon is built
 # with femtovg and skia only, so asking for software prints a warning on every run and
 # falls back here anyway. At 16px the pixel fonts still land on whole pixels, which a
 # capture of the panel confirms, but it is luck rather than a guarantee: a Slint node
 # build carrying renderer-software would make it one.
 export SLINT_BACKEND=winit-femtovg
-carried="$APPDIR/usr/lib/node/node_modules"
 export NODE_PATH="$carried${NODE_PATH:+:$NODE_PATH}"
 
-[ $# -eq 0 ] && exec node "$APPDIR/usr/lib/node/launcher.js"
+[ $# -eq 0 ] && exec node "$launcher"
 
 script=$1
 shift

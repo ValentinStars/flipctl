@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 # /// flipctl
 # name = "Breakout"
-# status = true
-# audio = true
-# runtime = ""
+# status = false
 # ///
 """Retro Breakout (Brick Breaker) for FlipCTL.
 
 Bounce the ball to smash all bricks!
 Controls:
-  Left / Right / A / D: Move Paddle
-  Ok / Space / Up: Launch Ball / Unpause
-  Escape / Back: Exit
-  Touch / Mouse: Tap left or right side of screen, or drag paddle
+  Hold Left / Right or X / V: Move paddle
+  OK / B / Up: Serve
+  Z / Back: Exit
+  Touch / Mouse: Drag the paddle or tap to aim and serve
 """
 
 import asyncio
+import time
 import flipctl
 import slint
 
 FIELD_W = 256
 FIELD_H = 144
 PADDLE_W = 38
-PADDLE_H = 5
 PADDLE_Y = 130
 BALL_SIZE = 4
 BRICK_ROWS = 4
@@ -33,6 +31,11 @@ BRICK_GAP_X = 3
 BRICK_GAP_Y = 3
 OFFSET_X = 4
 OFFSET_Y = 22
+STEP = 1 / 60
+PADDLE_SPEED = 200
+LEFT_KEYS = {flipctl.Key.LEFT, flipctl.Key.VIEW}
+RIGHT_KEYS = {flipctl.Key.RIGHT, flipctl.Key.EDIT}
+SERVE_KEYS = {flipctl.Key.OK, flipctl.Key.UP, flipctl.Key.RUN}
 
 PAGE = """
 import { Shell } from "@app/shell.slint";
@@ -52,12 +55,11 @@ export component App inherits Shell {
     in property <int> paddle_x: 109;
     in property <int> ball_x: 126;
     in property <int> ball_y: 126;
-    in property <string> msg: "PRESS OK / SPACE TO LAUNCH";
+    in property <string> msg: "OK / B TO SERVE";
     in property <[Brick]> bricks;
 
     callback keyed(string, bool);
-    callback tap_left();
-    callback tap_right();
+    callback aim(float);
     callback launch();
 
     key(text, down) => { root.keyed(text, down); }
@@ -139,26 +141,17 @@ export component App inherits Shell {
             }
         }
 
-        // Touch control left half
         TouchArea {
-            x: 0; y: 20px;
-            width: root.width / 2;
-            height: root.height - 20px;
-            clicked => {
-                root.tap_left();
-                root.launch();
+            x: 0; y: 19px;
+            width: parent.width;
+            height: parent.height - self.y;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.aim(self.mouse-x / 1px);
+                }
             }
-        }
-
-        // Touch control right half
-        TouchArea {
-            x: root.width / 2; y: 20px;
-            width: root.width / 2;
-            height: root.height - 20px;
-            clicked => {
-                root.tap_right();
-                root.launch();
-            }
+            moved => { root.aim(self.mouse-x / 1px); }
+            clicked => { root.launch(); }
         }
     }
 }
@@ -167,24 +160,30 @@ export component App inherits Shell {
 
 class BreakoutGame:
     def __init__(self):
+        self.held = set()
         self.reset_all()
 
     def reset_all(self):
         self.score = 0
         self.lives = 3
         self.paddle_x = (FIELD_W - PADDLE_W) // 2
-        self.ball_x = self.paddle_x + PADDLE_W // 2 - BALL_SIZE // 2
-        self.ball_y = PADDLE_Y - BALL_SIZE - 1
-        self.vx = 2.0
-        self.vy = -2.5
-        self.in_play = False
         self.game_over = False
         self.win = False
-        self.msg = "PRESS OK / SPACE TO LAUNCH"
+        self.serve_ready("OK / B TO SERVE")
         self.init_bricks()
+
+    def serve_ready(self, message):
+        self.in_play = False
+        self.ball_x = self.paddle_x + (PADDLE_W - BALL_SIZE) / 2
+        self.ball_y = PADDLE_Y - BALL_SIZE - 1
+        self.vx = 100 * STEP
+        self.vy = -125 * STEP
+        self.msg = message
 
     def init_bricks(self):
         self.bricks = []
+        self.remaining_bricks = BRICK_ROWS * BRICK_COLS
+        self.bricks_changed = True
         for r in range(BRICK_ROWS):
             for c in range(BRICK_COLS):
                 bx = OFFSET_X + c * (BRICK_W + BRICK_GAP_X)
@@ -197,20 +196,34 @@ class BreakoutGame:
                     "alive": True,
                 })
 
+    def aim(self, x):
+        self.move_paddle(x - PADDLE_W / 2 - self.paddle_x)
+
     def move_paddle(self, dx):
         self.paddle_x = max(0, min(FIELD_W - PADDLE_W, self.paddle_x + dx))
         if not self.in_play and not self.game_over and not self.win:
-            self.ball_x = self.paddle_x + PADDLE_W // 2 - BALL_SIZE // 2
+            self.ball_x = self.paddle_x + (PADDLE_W - BALL_SIZE) / 2
+
+    def key(self, key, down):
+        if not down:
+            self.held.discard(key)
+        elif key not in self.held:
+            self.held.add(key)
+            if key in SERVE_KEYS:
+                self.launch()
 
     def launch(self):
         if self.game_over or self.win:
             self.reset_all()
-            return
-        if not self.in_play:
-            self.in_play = True
-            self.msg = ""
+        self.in_play = True
+        self.msg = ""
 
     def update(self):
+        if self.game_over or self.win:
+            return
+        direction = bool(self.held & RIGHT_KEYS) - bool(self.held & LEFT_KEYS)
+        if direction:
+            self.move_paddle(direction * PADDLE_SPEED * STEP)
         if not self.in_play:
             return
 
@@ -234,83 +247,83 @@ class BreakoutGame:
             if self.lives <= 0:
                 self.in_play = False
                 self.game_over = True
-                self.msg = "GAME OVER! PRESS OK"
+                self.msg = "GAME OVER  -  OK / B TO RESTART"
             else:
-                self.in_play = False
-                self.paddle_x = (FIELD_W - PADDLE_W) // 2
-                self.ball_x = self.paddle_x + PADDLE_W // 2 - BALL_SIZE // 2
-                self.ball_y = PADDLE_Y - BALL_SIZE - 1
-                self.vx = 2.0
-                self.vy = -2.5
-                self.msg = "BALL LOST! PRESS OK"
+                self.serve_ready("BALL LOST  -  OK / B TO SERVE")
             return
 
         # Paddle collision
         if (
             self.vy > 0
-            and next_y + BALL_SIZE >= PADDLE_Y
-            and next_y <= PADDLE_Y + PADDLE_H
+            and self.ball_y + BALL_SIZE <= PADDLE_Y <= next_y + BALL_SIZE
             and next_x + BALL_SIZE >= self.paddle_x
             and next_x <= self.paddle_x + PADDLE_W
         ):
             hit_offset = (next_x + BALL_SIZE / 2) - (self.paddle_x + PADDLE_W / 2)
             norm_offset = hit_offset / (PADDLE_W / 2)
-            self.vx = norm_offset * 3.2
+            self.vx = max(-1, min(1, norm_offset)) * 165 * STEP
             self.vy = -abs(self.vy)
             next_y = PADDLE_Y - BALL_SIZE
 
         # Brick collisions
         ball_r = next_x + BALL_SIZE
         ball_b = next_y + BALL_SIZE
-        alive_count = 0
-
-        for b in self.bricks:
-            if not b["alive"]:
+        for brick in self.bricks:
+            if not brick["alive"]:
                 continue
-            alive_count += 1
-            bx = b["x"]
-            by = b["y"]
-            bw = b["w"]
-            bh = b["h"]
+            bx, by, bw, bh = (brick[field] for field in ("x", "y", "w", "h"))
+            if not (next_x < bx + bw and ball_r > bx and next_y < by + bh and ball_b > by):
+                continue
+            brick["alive"] = False
+            self.bricks_changed = True
+            self.remaining_bricks -= 1
+            self.score += 10
 
-            # Overlap check
-            if next_x < bx + bw and ball_r > bx and next_y < by + bh and ball_b > by:
-                b["alive"] = False
-                self.score += 10
+            crossed_side = self.ball_x + BALL_SIZE <= bx or self.ball_x >= bx + bw
+            crossed_face = self.ball_y + BALL_SIZE <= by or self.ball_y >= by + bh
+            if crossed_side and not crossed_face:
+                next_x = bx - BALL_SIZE if self.vx > 0 else bx + bw
+                self.vx = -self.vx
+            else:
+                next_y = by - BALL_SIZE if self.vy > 0 else by + bh
                 self.vy = -self.vy
-                alive_count -= 1
-                break
+            break
 
-        if alive_count == 0:
+        if self.remaining_bricks == 0:
             self.in_play = False
             self.win = True
-            self.msg = "VICTORY! PRESS OK"
+            self.msg = "VICTORY  -  OK / B TO RESTART"
 
-        self.ball_x = int(next_x)
-        self.ball_y = int(next_y)
+        self.ball_x = next_x
+        self.ball_y = next_y
 
 
 def main():
     ui = flipctl.load(PAGE, "breakout.slint")
     game = BreakoutGame()
 
+    last_frame = {}
+
     def sync_ui():
-        ui.score = game.score
-        ui.lives = game.lives
-        ui.paddle_x = game.paddle_x
-        ui.ball_x = game.ball_x
-        ui.ball_y = game.ball_y
-        ui.msg = game.msg
-        ui.bricks = game.bricks
+        frame = {
+            "score": game.score,
+            "lives": game.lives,
+            "paddle_x": round(game.paddle_x),
+            "ball_x": round(game.ball_x),
+            "ball_y": round(game.ball_y),
+            "msg": game.msg,
+        }
+        for name, value in frame.items():
+            if last_frame.get(name) != value:
+                setattr(ui, name, value)
+        last_frame.update(frame)
+        if game.bricks_changed:
+            ui.bricks = [brick.copy() for brick in game.bricks]
+            game.bricks_changed = False
 
-    @ui.tap_left
-    def _():
-        game.move_paddle(-14)
-        sync_ui()
-
-    @ui.tap_right
-    def _():
-        game.move_paddle(14)
+    @ui.aim
+    def _(x):
+        game.aim(x)
         sync_ui()
 
     @ui.launch
@@ -320,26 +333,29 @@ def main():
 
     @flipctl.on_key(ui)
     def _(key, down):
-        if not down:
-            return
-        if key in (flipctl.Key.BACK, flipctl.Key.ESCAPE):
+        if down and key in (flipctl.Key.BACK, flipctl.Key.ESCAPE):
             slint.quit_event_loop()
-        elif key in (flipctl.Key.LEFT, flipctl.Key.VIEW):
-            game.move_paddle(-16)
-        elif key in (flipctl.Key.RIGHT, flipctl.Key.EDIT):
-            game.move_paddle(16)
-        elif key in (flipctl.Key.OK, flipctl.Key.POWER, flipctl.Key.UP, flipctl.Key.RUN):
-            game.launch()
-        sync_ui()
+            return
+        game.key(key, down)
 
     async def loop():
+        previous = time.monotonic()
+        pending = 0.0
         while True:
-            game.update()
+            now = time.monotonic()
+            pending += min(now - previous, 0.1)
+            previous = now
+            while pending >= STEP:
+                game.update()
+                pending -= STEP
             sync_ui()
-            await asyncio.sleep(0.02)  # ~50 FPS
+            await asyncio.sleep(max(0, STEP - pending - (time.monotonic() - now)))
 
     sync_ui()
-    flipctl.run(ui, loop())
+    try:
+        flipctl.run(ui, loop())
+    finally:
+        ui.hide()
 
 
 if __name__ == "__main__":

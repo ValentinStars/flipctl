@@ -65,9 +65,9 @@ class Manifests(unittest.TestCase):
 
         Every `.py` under `apps/` that is not part of a bundle's own source is
         deployed into ~/Apps as it stands, at the same path, so a folder here is a
-        folder in the menu. A missing block makes it invisible to the scanner and a
-        syntax error makes it a traceback on the panel, both of which are cheaper to
-        catch here than on the device.
+        folder in the menu. Underscore-prefixed Python modules travel with script
+        apps in the same directory and only need to parse. App entry points also
+        need a manifest so the scanner can find them.
         """
         scripts = sorted(
             path
@@ -79,6 +79,8 @@ class Manifests(unittest.TestCase):
             with self.subTest(script=path.name):
                 text = path.read_text()
                 ast.parse(text)
+                if path.name.startswith("_") and not path.name.endswith(".fap.py"):
+                    continue
                 head = text[:8192].splitlines()
                 self.assertIn("# /// flipctl", head, "the block is what makes it an app")
                 self.assertTrue(
@@ -165,6 +167,25 @@ class AppDir(unittest.TestCase):
         for path in appdir.rglob("*"):
             if path.is_symlink():
                 self.assertFalse(os.readlink(path).startswith("/"), path)
+
+    def test_a_crate_carries_what_its_locks_unpacked(self):
+        runtime = self.app / "runtime"
+        (runtime / "usr" / "bin").mkdir(parents=True)
+        (runtime / "usr" / "bin" / "helper").write_bytes(b"\x7fELF helper")
+        (runtime / "usr" / "lib" / "aarch64-linux-gnu").mkdir(parents=True)
+        (runtime / "usr" / "lib" / "aarch64-linux-gnu" / "libhelper.so.1").write_bytes(b"\x7fELF")
+        (runtime / "usr" / "share" / "doc" / "helper").mkdir(parents=True)
+        (runtime / "usr" / "share" / "doc" / "helper" / "LICENSE").write_text("helper terms\n")
+        appdir = self.tmp / "AppDir"
+        bundle.stage(self.app, appdir, self.binary, "v1", self.repo)
+        # Beside the program, in the usr/bin and the library directory AppRun puts
+        # ahead of the device's own.
+        self.assertEqual((appdir / "usr" / "bin" / "helper").read_bytes(), b"\x7fELF helper")
+        self.assertEqual((appdir / "usr" / "bin" / "thing-app").read_bytes(), b"\x7fELF fake")
+        self.assertTrue((appdir / "usr" / "lib" / "aarch64-linux-gnu" / "libhelper.so.1").is_file())
+        self.assertTrue((appdir / "usr" / "share" / "doc" / "helper" / "LICENSE").is_file())
+        self.assertTrue((appdir / "usr" / "share" / "doc" / "thing-app" / "LICENSE").is_file())
+        self.assertFalse((appdir / "runtime").exists(), "laid out as the AppDir, not under it")
 
     def test_a_kind_that_is_not_bundled_yet_is_refused(self):
         (self.app / "Cargo.toml").unlink()

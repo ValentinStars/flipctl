@@ -91,6 +91,9 @@ impl KmsSink {
     /// Auto-detection matters because card numbers are renumbered by kernel
     /// rebuilds, which has already broken flipctl once; a by-path symlink is
     /// stable but only if the SPI address never changes.
+    ///
+    /// A board with no panel fails the search with `ErrorKind::NotFound`, which is
+    /// how a caller tells it apart from a panel that is there and failed to open.
     pub fn open(explicit: Option<&Path>) -> std::io::Result<Self> {
         let path = match explicit {
             Some(p) => p.to_path_buf(),
@@ -221,10 +224,10 @@ impl KmsSink {
             }
         }
 
-        Err(std::io::Error::other(format!(
-            "no /dev/dri/card* is driven by {DRIVER:?} (tried {})",
-            candidates.len()
-        )))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no /dev/dri/card* is driven by {DRIVER:?} (tried {})", candidates.len()),
+        ))
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -344,10 +347,11 @@ impl KmsSink {
     /// drops it. Both are waited out here, before any buffer is created on the fd, since a
     /// buffer belongs to the fd that made it.
     ///
-    /// The wait exists because logind activates this session a moment after the unit
-    /// starts, and it was seen to last 10s once in 19 boots for a reason the kernel log
-    /// did not show. Giving up costs a restart that re-pays the whole start-up, so the
-    /// error says what was seen: the card, how long, and which refusal.
+    /// The wait exists because the card's last holder, cog or the flipctl before us,
+    /// can still be letting go when the unit starts. Under a login session it was seen
+    /// to last 10s once in 19 boots for a reason the kernel log did not show. Giving up
+    /// costs a restart that re-pays the whole start-up, so the error says what was
+    /// seen: the card, how long, and which refusal.
     fn open_as_master(path: &Path, limit: Duration) -> std::io::Result<Card> {
         let began = Instant::now();
         let mut card = Card(OpenOptions::new().read(true).write(true).open(path)?);

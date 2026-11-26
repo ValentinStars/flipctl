@@ -3,7 +3,6 @@
 # name = "Volume"
 # status = true
 # audio = true
-# runtime = ""
 # ///
 """Laptop Volume Control for FlipCTL.
 

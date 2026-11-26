@@ -47,6 +47,13 @@ chip_fill    = "#e5e5e5"   # MenuDropdownLine CHIP_FILL
 pick_rule    = "#999999"   # internet_radio.js dropdown item divider
 # A hosted app's title bar, under the status bar and the full width of the panel.
 app_bar      = "#d9d9d9"   # internet_radio.js title header fill
+# The Wi-Fi Scanner's list and card, from its Figma frames: secondary text and the
+# security pill, a weak signal's arcs and bars, the card's alternate rows, and the
+# grey the list fades to under the soft keys.
+scan_text    = "#696969"   # Wi-Fi Scanner subline, note, pill, card label
+scan_weak    = "#b3b3b3"   # Wi-Fi Scanner signal arc and bar beyond the level
+scan_stripe  = "#f5f5f5"   # Wi-Fi Scanner card alternate row
+scan_fade    = "#bbbbbb"   # Wi-Fi Scanner list fade under the soft keys
 chevron_flash = "#222222"   # MenuLine < > arrow tap flash
 popup_edge    = "#d0d0d0"   # drawPopupLeft shadow edge
 keycap_dim    = "#888888"   # keyboard language-switcher label
@@ -98,6 +105,14 @@ text_draw_y         = 3     # MenuLine.js TEXT_DRAW_Y, puts cap top at line y+6
 # script is run through. Wider than the icon gap, so the pair reads as a name and an
 # aside rather than as two words of one name.
 label_tag_gap       = 6
+# A three-column table on a detail screen, Software Revisions': a left column, a
+# cell, and a right column, a gap between each. The cell takes the rest of the line,
+# so the three and their gaps fill it: 76 + 6 + 68 + 6 + 84 is the 240 between the
+# margins. The left column holds the widest codebase, `linux-mainline` at 74; the
+# right one twelve of the widest hex digit, 84, and more of the narrower ones.
+table_left_w        = 76
+table_gap           = 6
+table_right_w       = 84
 status_pad_r        = 5     # MenuLine.js STATUS_PAD_R
 
 # Gap between each chevron and the value in a "< ON >" status. MenuLine.js pins
@@ -280,6 +295,10 @@ app_bar_title_dy    = 1     # TITLE_TEXT_Y, from the status bar's bottom edge
 # empty chip reads as a missing control rather than as a value at the bottom of
 # its range.
 drop_slider_min_w   = 9
+# A menu row's level bar: the slider chip, right-aligned where the status goes,
+# narrow enough to leave the label its room and centred on the 20px row.
+menu_bar_w          = 72
+menu_bar_y          = 4
 
 list_container_x    = 5     # menu.js CONTAINER_X
 # menu.js's value, and the shipping device's. Five 20px rows plus four dividers is
@@ -298,6 +317,9 @@ list_viewport_h     = 104   # menu.js, = 5 * 20 + 4 dividers
 submenu_container_y = 28    # submenu.js containerY, = status_bar_h + 15
 breadcrumb_x        = 4     # submenu.js breadcrumbX
 breadcrumb_y        = 15    # submenu.js breadcrumbY, = status_bar_h + 2
+# A detail screen with no breadcrumb, which is every app's, starts where the
+# breadcrumb would be rather than leaving that band blank.
+detail_container_y  = 15    # = breadcrumb_y
 
 selector_x          = 4     # menu.js SELECTOR_X
 selector_w_scroll   = 244   # menu.js SELECTOR_W_WITH_SCROLL
@@ -319,6 +341,20 @@ modal_y             = 40
 modal_w             = 224
 modal_h             = 60
 modal_line_h        = 11
+# A dialog that asks for one of a few options, over anything on the panel: the
+# modal's frame and width, its height grown to the list. A centred title, the
+# options on the dropdown picker's pitch with its rules and selector, and one line
+# under them saying what the picked option means.
+choice_pad          = 4     # frame to title, and hint to frame
+choice_inset        = 4     # frame's side to the options' rules and selector
+choice_text_x       = 4     # an option's text, in from the selector's left edge
+choice_title_gap    = 5     # title line to the first option's selector
+# The title is in the heavy face, whose ink sits 3px lower in its line than the
+# regular face's. Raised by that much so it is as far from the frame's top as from
+# the first option.
+choice_title_dy     = -3
+choice_hint_gap     = 2     # last option's selector to the hint line
+choice_col_gap      = 8     # an option's text to its note, in the column after it
 
 # The boot menu, which has its own denser geometry: a header instead of a status
 # bar, 16px rows instead of 20, and six of them instead of five.
@@ -367,6 +403,8 @@ kb_input_max_w      = 238   # INPUT_MAX_W
 kb_input_h          = 14
 kb_input_gap        = 14    # inputY = titleY + 14
 kb_warning_gap      = 3     # warning sits 3px under the field
+kb_warning_line_h   = 11    # a wrapped warning's second line
+kb_warning_lift     = 8     # everything above the keyboard moves up for it
 kb_text_ink_h       = 11    # font cap height, for centring text in the field
 # The two tabs under the keyboard: 123 on the left, backspace on the right.
 kb_tab_w            = 48
@@ -380,12 +418,17 @@ kb_space_stub_h     = 2
 # The Info and Edit popups, from boot_menu.js. The header band carries the icon,
 # the name and a centred size line; the body starts below it.
 popup_hdr_h         = 38    # boot_menu.js HDR
+popup_hdr_bare_h    = 22    # the band with no size line under the name
 popup_line_h        = 11    # its Info line pitch
 popup_row_h         = 16    # its Edit action pitch
 popup_pad_h         = 8     # boot_menu.js padH
 popup_size_y        = 24    # the size line, relative to the frame top
 popup_icon_y        = 6     # icon and name, relative to the frame top
 popup_max_w         = 252   # the frame never grows past this
+popup_body_pad      = 4     # band to the first row, and the last row to the frame
+# A popup whose rows do not all fit scrolls them, with the Wi-Fi modal's bar.
+popup_gutter        = 6     # room kept for the bar, only while it shows
+popup_scrollbar_pad = 5     # the dotted track, in from the frame's right edge
 size_gap            = 4     # boot_menu.js SIZE_GAP, between the size line's parts
 boot_selector_h     = 16    # boot_menu.js SELECTOR_H, the frame fits the row
 boot_icon_box_w     = 12    # boot_menu.js ICON_BOX_W, a fixed column so labels align
@@ -486,6 +529,15 @@ readout_gap         = 3
 # 82 + 15 + 3 + 19 + 1 + 4 + 1 + 5 + 34 = 164, nudged 2px left by eye to 162.
 power_icon_x        = 162
 
+# The idle screen's address list: one line per address, and a gap between one
+# interface's card and the next. drawEthCard's two-line card, 24px and 2 apart.
+idle_line_h         = 12
+idle_card_gap       = 2
+
+# The square left blank in the middle of a QR code for an icon, in modules, which are
+# pixels: the code is drawn a pixel a module.
+qr_icon             = 34
+
 # Dimensionless counts. Kept apart from [metric] because those are pixel lengths;
 # a count used as a length is a type error in the generated Slint theme.
 [count]
@@ -500,6 +552,9 @@ boot_visible_rows = 6
 # Rows a detail screen shows. Body starts at submenu_container_y (28) on an item_h
 # pitch, and the last row has to clear the soft strip at 130: 28 + 8 * 12 = 124.
 detail_visible_rows = 8
+# The same screen with no breadcrumb starts at detail_container_y (15), which
+# makes room for one more row: 15 + 9 * 12 = 123.
+detail_visible_rows_bare = 9
 msgbox_max_chars  = 25   # MessageBox.js maxLineLength
 # Rows the visible-networks modal keeps room for while it is still scanning, or
 # once it knows there is nothing in range: the spinner and the placeholder both
@@ -517,6 +572,7 @@ box   = 4   # MessageBox, bottom-bar button top corners, keyboard container
 [timing]
 press_flash_ms   = 30    # bottom-bar button, next scene usually replaces the view
 toast_ms         = 1600  # wifi.js, how long a modal's pill stays up
+notice_ms        = 1000  # app manager's installed, uninstalled and already-installed dialogs, which close themselves
 chevron_flash_ms = 120   # toggle chevron tap, must outlast the 200ms icon tick
 press_commit_ms  = 150   # popup item and keyboard key, the flash must be seen
 icon_frame_ms    = 200   # animated icon strip, 5 fps

@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
 # /// flipctl
 # name = "2048"
-# status = true
-# audio = true
-# runtime = ""
+# status = false
 # ///
 """2048 Puzzle Game for FlipCTL.
 
 Controls:
   Up / Down / Left / Right: Slide tiles
-  Ok / Enter: Restart game
+  Swipe or drag on the field to slide tiles
+  B / Enter: Restart game
   Escape / Back: Exit
 """
 
 import random
+from pathlib import Path
 import flipctl
 import slint
 
 SIZE = 4
+SCORE_FILE = Path("best-score.txt")
 
 PAGE = """
 import { Shell } from "@app/shell.slint";
 import { FlipperTheme } from "@theme";
 
 export struct Tile {
-    idx: int,
+    col: int,
+    row: int,
     val_str: string,
     filled: bool,
 }
@@ -36,10 +38,7 @@ export component App inherits Shell {
     in property <[Tile]> tiles;
 
     callback keyed(string, bool);
-    callback swipe_up();
-    callback swipe_down();
-    callback swipe_left();
-    callback swipe_right();
+    callback slide(string);
     callback restart();
 
     key(text, down) => { root.keyed(text, down); }
@@ -88,14 +87,14 @@ export component App inherits Shell {
             border-color: FlipperTheme.black;
 
             for t in root.tiles: Rectangle {
-                x: (t.idx - (t.idx / 4) * 4) * 29px + 1px;
-                y: (t.idx / 4) * 29px + 1px;
+                x: t.col * 29px + 1px;
+                y: t.row * 29px + 1px;
                 width: 27px; height: 27px;
-                background: t.filled ? FlipperTheme.white : FlipperTheme.black;
+                background: t.filled ? FlipperTheme.white : FlipperTheme.field_label;
 
                 if t.filled: Text {
-                    x: 2px; y: 6px;
-                    width: parent.width - 4px;
+                    x: 0; y: 6px;
+                    width: parent.width;
                     horizontal-alignment: center;
                     text: t.val_str;
                     color: FlipperTheme.black;
@@ -121,22 +120,37 @@ export component App inherits Shell {
             }
         }
 
-        // Touch areas for swipe controls
-        TouchArea {
-            x: 0; y: 16px; width: 60px; height: root.height - 16px;
-            clicked => { root.swipe_left(); }
+        Text {
+            x: 8px; y: 62px;
+            text: "SWIPE";
+            color: FlipperTheme.black;
         }
-        TouchArea {
-            x: root.width - 60px; y: 16px; width: 60px; height: root.height - 16px;
-            clicked => { root.swipe_right(); }
+        playfield := TouchArea {
+            x: 0; y: 16px; width: parent.width; height: parent.height - self.y;
+            clicked => {
+                let dx = self.mouse-x - self.pressed-x;
+                let dy = self.mouse-y - self.pressed-y;
+                if Math.abs(dx / 1px) >= 12 || Math.abs(dy / 1px) >= 12 {
+                    if Math.abs(dx / 1px) >= Math.abs(dy / 1px) {
+                        root.slide(dx < 0px ? "left" : "right");
+                    } else {
+                        root.slide(dy < 0px ? "up" : "down");
+                    }
+                }
+            }
         }
-        TouchArea {
-            x: 60px; y: 16px; width: root.width - 120px; height: 40px;
-            clicked => { root.swipe_up(); }
-        }
-        TouchArea {
-            x: 60px; y: root.height - 40px; width: root.width - 120px; height: 40px;
-            clicked => { root.swipe_down(); }
+        Rectangle {
+            x: 192px; y: 100px; width: 60px; height: 26px;
+            border-width: 1px;
+            border-color: FlipperTheme.black;
+            background: restart_area.pressed ? FlipperTheme.black : FlipperTheme.white;
+            Text {
+                width: 100%; height: 100%;
+                horizontal-alignment: center; vertical-alignment: center;
+                text: "B  New";
+                color: restart_area.pressed ? FlipperTheme.white : FlipperTheme.black;
+            }
+            restart_area := TouchArea { clicked => { root.restart(); } }
         }
     }
 }
@@ -147,7 +161,10 @@ class Game2048:
     def __init__(self):
         self.board = [[0 for _ in range(SIZE)] for _ in range(SIZE)]
         self.score = 0
-        self.high_score = 0
+        try:
+            self.high_score = max(0, int(SCORE_FILE.read_text()))
+        except (OSError, ValueError):
+            self.high_score = 0
         self.msg = ""
         self.game_over = False
         self.reset()
@@ -178,8 +195,6 @@ class Game2048:
                 val = non_zeros[i] * 2
                 merged.append(val)
                 self.score += val
-                if self.score > self.high_score:
-                    self.high_score = self.score
                 skip = True
             else:
                 merged.append(non_zeros[i])
@@ -222,10 +237,18 @@ class Game2048:
                     self.board[r][c] = new_col[r]
 
         if moved:
+            if self.score > self.high_score:
+                self.high_score = self.score
+                try:
+                    pending = SCORE_FILE.with_suffix(".tmp")
+                    pending.write_text(str(self.high_score))
+                    pending.replace(SCORE_FILE)
+                except OSError:
+                    pass
             self._spawn()
-            if not self._can_move():
-                self.game_over = True
-                self.msg = "GAME OVER!"
+        if not self._can_move():
+            self.game_over = True
+            self.msg = "GAME OVER!"
 
     def _can_move(self):
         for r in range(SIZE):
@@ -244,7 +267,8 @@ class Game2048:
             for c in range(SIZE):
                 v = self.board[r][c]
                 out.append({
-                    "idx": r * SIZE + c,
+                    "col": c,
+                    "row": r,
                     "val_str": str(v) if v > 0 else "",
                     "filled": v > 0,
                 })
@@ -261,17 +285,8 @@ def main():
         ui.msg = game.msg
         ui.tiles = game.tile_list()
 
-    @ui.swipe_left
-    def _(): game.move("left"); draw()
-
-    @ui.swipe_right
-    def _(): game.move("right"); draw()
-
-    @ui.swipe_up
-    def _(): game.move("up"); draw()
-
-    @ui.swipe_down
-    def _(): game.move("down"); draw()
+    @ui.slide
+    def _(direction): game.move(direction); draw()
 
     @ui.restart
     def _(): game.reset(); draw()
@@ -290,7 +305,7 @@ def main():
             game.move("up")
         elif key == flipctl.Key.DOWN:
             game.move("down")
-        elif key in (flipctl.Key.OK, flipctl.Key.RUN, flipctl.Key.POWER):
+        elif key in (flipctl.Key.OK, flipctl.Key.RUN):
             game.reset()
         draw()
 

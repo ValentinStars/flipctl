@@ -5,7 +5,7 @@
 //! patching, for the same reason the panel commits a frame rather than a diff:
 //! there is no second copy of the state to fall out of step.
 //!
-//! The strings are the panel's. "Boot Menu", "Auto start in Ns...", "(no profiles)"
+//! The strings are the panel's. "Select Profile", "Auto start in Ns...", "(no profiles)"
 //! and "Booting" are what `boot.slint` writes, and a second wording for the same
 //! screen would be a second thing to keep true.
 //!
@@ -63,7 +63,7 @@ pub fn window(selected: i32, count: usize, visible: usize) -> usize {
 /// Padded to the full width because the fill inverts a prefix of it, and a short
 /// string would invert to a stub rather than a bar.
 pub fn header(view: &View, cols: usize) -> String {
-    let left = "Boot Menu";
+    let left = "Select Profile";
     let right = if view.countdown >= 0 {
         format!("Auto start in {}s...", view.remaining)
     } else if view.loading {
@@ -180,7 +180,7 @@ enum Line {
     /// Centred in the box: the size, a message, the hint under it.
     Centred(String),
     /// A name on the left and, for a settings row, a value against the right edge.
-    Split { text: String, value: String, selected: bool },
+    Split { text: String, value: String, selected: bool, at_start: bool, at_end: bool },
 }
 
 /// The width a value slot takes: the value, and the chevrons either side.
@@ -196,12 +196,14 @@ fn slot(value: &str) -> String {
 fn popup_content(view: &View) -> Vec<Line> {
     let mut out = Vec::new();
     // The size the panel centres under the title: what deleting this profile alone
-    // would free.
-    out.push(Line::Centred(if view.size_unit.is_empty() {
-        format!("Size: {}", view.size_num)
-    } else {
-        format!("Size: {} {}", view.size_num, view.size_unit)
-    }));
+    // would free. Not on a screen that has dropped it.
+    if view.show_size {
+        out.push(Line::Centred(if view.size_unit.is_empty() {
+            format!("Size: {}", view.size_num)
+        } else {
+            format!("Size: {} {}", view.size_num, view.size_unit)
+        }));
+    }
     for l in &view.popup_lines {
         let mut text = l.text.clone();
         if l.heart {
@@ -211,6 +213,8 @@ fn popup_content(view: &View) -> Vec<Line> {
             text,
             value: if l.kind == 2 { l.value.clone() } else { String::new() },
             selected: l.selected,
+            at_start: l.at_start,
+            at_end: l.at_end,
         });
     }
     for m in &view.popup_message {
@@ -244,11 +248,15 @@ pub fn popup_body(view: &View, inner: usize) -> Vec<(String, bool)> {
         .iter()
         .map(|l| match l {
             Line::Centred(s) => (centred(s, inner), false),
-            Line::Split { text, value, selected } => {
+            Line::Split { text, value, selected, at_start, at_end } => {
                 let right = if value.is_empty() {
                     String::new()
                 } else if *selected {
-                    format!("< {value} >")
+                    // A chevron past the end of the range is a space, so the value
+                    // stays put.
+                    let left = if *at_start { ' ' } else { '<' };
+                    let right = if *at_end { ' ' } else { '>' };
+                    format!("{left} {value} {right}")
                 } else {
                     slot(value)
                 };
@@ -353,10 +361,10 @@ fn summary(view: &View) -> Vec<(String, String)> {
         Some((num, unit)) => format!("{num} {unit}"),
         None => "press View to measure".into(),
     };
-    let status = row.map(|r| r.status.clone()).unwrap_or_default();
+    let last_used = row.map(|r| r.last_used.clone()).unwrap_or_default();
     vec![
         ("Size".into(), size),
-        ("Last used".into(), if status.is_empty() { "never".into() } else { status }),
+        ("Last used".into(), if last_used.is_empty() { "never".into() } else { last_used }),
         (
             "Auto start".into(),
             match row.map(|r| r.auto) {
@@ -723,6 +731,7 @@ mod tests {
         Row {
             label: label.into(),
             status: status.into(),
+            last_used: status.into(),
             icon: 1,
             icon_w: 10.0,
             icon_h: 8.0,
@@ -791,7 +800,7 @@ mod tests {
         view.countdown = 50;
         view.remaining = 3;
         let head = header(&view, 40);
-        assert!(head.starts_with("Boot Menu"), "{head}");
+        assert!(head.starts_with("Select Profile"), "{head}");
         assert!(head.contains("Auto start in 3s..."), "{head}");
         assert_eq!(head.chars().count(), 40);
         assert_eq!(fill(&view, 40), 20);
@@ -802,7 +811,7 @@ mod tests {
         let mut view = blank();
         view.countdown = -1;
         assert_eq!(fill(&view, 40), 0);
-        assert_eq!(header(&view, 12).trim_end(), "Boot Menu");
+        assert_eq!(header(&view, 16).trim_end(), "Select Profile");
     }
 
     /// Slot 0 flush left, slot 4 flush right, the middle three across what is left:
@@ -836,6 +845,8 @@ mod tests {
             value: "7.0.1".into(),
             selected: true,
             heart: false,
+            at_start: false,
+            at_end: false,
         }];
         let selected = popup_body(&view, 30);
         assert!(selected[1].0.contains("< 7.0.1 >"), "{:?}", selected[1]);
@@ -865,6 +876,8 @@ mod tests {
             value: String::new(),
             selected: false,
             heart: false,
+            at_start: false,
+            at_end: false,
         }];
         let (x, _, w, h) = popup_rect(&view, 80, 24);
         // Its longest line is "Drive: /dev/sda (UFS)": a border and a gutter each
@@ -918,7 +931,7 @@ mod tests {
         let lines = screen(&view, 275, 19);
         assert_eq!(lines.len(), 19);
         assert!(lines[18].contains("F2 View"), "soft keys on the last row: {}", lines[18]);
-        assert!(lines[17].contains("Boot Menu"), "countdown above them: {}", lines[17]);
+        assert!(lines[17].contains("Select Profile"), "countdown above them: {}", lines[17]);
         assert!(lines[16].starts_with('\u{2514}'), "panes close above that: {}", lines[16]);
         for l in &lines {
             assert_eq!(l.chars().count(), 275);
@@ -966,8 +979,12 @@ mod tests {
             size_num: "?".into(),
             size_unit: String::new(),
             size_loading: false,
+            show_size: true,
             popup_w: 0.0,
             popup_body_h: 0.0,
+            popup_scroll_total: 0,
+            popup_scroll_visible: 0,
+            popup_scroll_offset: 0,
             size_slot_w: 0.0,
             buttons: ["", "View", "", "Edit", ""],
             selected_size: None,

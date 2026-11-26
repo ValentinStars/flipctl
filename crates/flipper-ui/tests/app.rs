@@ -36,7 +36,7 @@ fn sandbox() -> PathBuf {
 
 /// A fresh Apps folder for one test.
 fn apps_folder(name: &str) -> PathBuf {
-    let dir = sandbox().join(name);
+    let dir = sandbox().join("fixtures").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     dir
@@ -102,6 +102,7 @@ fn a_bundle_is_read_without_being_run() {
     assert_eq!(a.wayland, "./AppRun");
     assert_eq!(a.apt, ["mpv"]);
     assert!(a.audio && a.status);
+    assert!(!a.back_leaves, "Back goes to an app unless it says otherwise");
     assert_eq!(a.size, Some((320, 200)));
     assert_eq!(a.rotate, app::Rotate::Left);
     assert_eq!(a.env, ["FOO=bar", "X=1"]);
@@ -230,9 +231,40 @@ fn a_script_is_listed_beside_a_bundle() {
         ..Default::default()
     };
     assert_eq!(
-        script.launch_line(Some(&launcher)),
+        script.launch_line(Some(&launcher), &[]),
         format!("'{}' '{}'", launcher.bundle.display(), script.bundle.display())
     );
+}
+
+/// An icon may sit in the block as a data URI, so a script app is one file. It is
+/// decoded into the app's cache and served from there; one that is not a PNG is none.
+#[test]
+fn a_script_carries_its_icon_in_its_block() {
+    use base64::Engine;
+
+    let root = apps_folder("script-icon");
+    let png = b"\x89PNG\r\n\x1a\nnot really the rest";
+    let uri = base64::engine::general_purpose::STANDARD.encode(png);
+    std::fs::write(
+        root.join("sniff.fap.py"),
+        format!(
+            "# /// flipctl\n# name = \"Sniff\"\n# icon = \"data:image/png;base64,{uri}\"\n# ///\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("text.fap.py"),
+        "# /// flipctl\n# name = \"Text\"\n# icon = \"data:image/png;base64,aGVsbG8=\"\n# ///\n",
+    )
+    .unwrap();
+
+    let apps = bundle::discover(&root);
+    let sniff = apps.iter().find(|a| a.name == "Sniff").expect("listed");
+    let icon = sniff.icon_path().expect("an icon");
+    assert!(icon.starts_with(bundle::cache_dir(&sniff.key)), "{}", icon.display());
+    assert_eq!(std::fs::read(&icon).unwrap(), png);
+    let text = apps.iter().find(|a| a.name == "Text").expect("still listed");
+    assert_eq!(text.icon_path(), None, "\"hello\" is not a PNG");
 }
 
 /// A block of its own beats the defaults, and a script may name a launcher that is
@@ -393,4 +425,29 @@ fn a_folder_in_both_roots_is_one_folder() {
         assert_eq!(app.group, ["Test Tools"], "both sit in the same group");
     }
     assert_eq!(apps[0].key, "Test Tools-leds");
+}
+
+#[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn a_foreign_bundle_does_not_shadow_the_native_one() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let first = apps_folder("architecture-native");
+    let second = apps_folder("architecture-foreign");
+    let native = first.join("radio.fap.AppImage");
+    let foreign = second.join("radio.fap.AppImage");
+    bundle_with(&native, &[("app.toml", RADIO.as_bytes())], None);
+    bundle_with(&foreign, &[("app.toml", RADIO.as_bytes())], None);
+    let (this_machine, other_machine): (u16, u16) =
+        if cfg!(target_arch = "x86_64") { (62, 183) } else { (183, 62) };
+    for (path, machine) in [(&native, this_machine), (&foreign, other_machine)] {
+        let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.seek(SeekFrom::Start(18)).unwrap();
+        file.write_all(&machine.to_le_bytes()).unwrap();
+    }
+
+    assert_eq!(bundle::read(&foreign, &[]), Err(bundle::Skip::WrongArchitecture));
+    let apps = bundle::discover_all(&[first, second]);
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].bundle, native);
 }

@@ -51,6 +51,11 @@ echo "== the panel binary (the only build that compiles main.rs) =="
 # and the deploy uses the full set, so that is what is built.
 cargo build --quiet -p flipctl --features "slint device wayland gpu remote"
 
+if command -v python3 >/dev/null 2>&1; then
+    echo "== Home menu shortcuts =="
+    python3 ci/test_home_menu.py "${CARGO_TARGET_DIR:-target}/debug/flipctl"
+fi
+
 echo "== formatting =="
 # rustfmt.toml is the argument about style; this is what keeps it true. A table that
 # is deliberately wider than the limit carries #[rustfmt::skip].

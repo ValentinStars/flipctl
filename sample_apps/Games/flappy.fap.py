@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// flipctl
 # name = "Flappy"
-# status = true
-# audio = true
-# runtime = ""
+# status = false
 # ///
 """Flappy Flipper (Dolphin Jump) for FlipCTL.
 

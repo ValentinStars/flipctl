@@ -85,9 +85,11 @@ type Work = Box<dyn FnOnce() -> Result<bool, String> + Send>;
 enum Popup {
     /// What the View key opens: the profile's facts, and the way into Config.
     View,
-    /// What this profile boots with: the four hardware lines that are not built yet,
-    /// and the kernel it boots.
+    /// What this profile boots with: its hardware, the video out and the kernel it
+    /// boots.
     Config,
+    /// The GPIO header's buses, one line each, opened from Config's GPIO line.
+    Gpio,
     Edit,
     /// Waiting for a yes on the action at this index.
     Confirm(usize),
@@ -129,8 +131,11 @@ pub enum Outcome {
 /// One row of the list.
 pub struct Row {
     pub label: String,
-    /// "Running", "Used 3 hours ago", or empty for one never booted.
+    /// What the row shows on the right: `FAILED`, else `last_used` when it fits beside
+    /// the label, else nothing.
     pub status: String,
+    /// "Running", "Used 3 hours ago", or empty for one never booted.
+    pub last_used: String,
     /// 0 none, else 1-based into the icon table the drawing side holds.
     pub icon: i32,
     pub icon_w: f32,
@@ -155,21 +160,63 @@ pub struct PopupLine {
     pub value: String,
     pub selected: bool,
     pub heart: bool,
+    /// The value is at the first or the last of its range, which drops that chevron:
+    /// the spinners stop at their ends rather than wrapping.
+    pub at_start: bool,
+    pub at_end: bool,
 }
 
 /// The widest value a settings row of this profile can hold.
 ///
 /// Not the value showing: the kernel line spins through every kernel the profile has,
-/// and a popup measured from whichever one is up would grow and shrink as somebody
-/// walked through them, moving the frame under their eyes. Measured across all of them
-/// once, so the frame is the size it needs and then stays put.
+/// and the other lines through their tables, and a popup measured from whichever one
+/// is up would grow and shrink as somebody walked through them, moving the frame under
+/// their eyes. Measured across all of them once, so the frame is the size it needs and
+/// then stays put.
 fn widest_value(p: &Profile) -> u16 {
     use crate::font::TITLE;
-    p.entries
+    let kernels = p.entries.iter().map(|e| if e.short.is_empty() { &e.version } else { &e.short });
+    let tables = boot::VIDEO_OUT
         .iter()
-        .map(|e| TITLE.text_width(if e.short.is_empty() { &e.version } else { &e.short }))
-        .max()
-        .unwrap_or(0)
+        .chain(boot::RAM)
+        .map(|(_, label)| *label)
+        .chain(boot::SWAP.iter().copied());
+    kernels.map(String::as_str).chain(tables).map(|v| TITLE.text_width(v)).max().unwrap_or(0)
+}
+
+/// What Config's GPIO line says: the buses that are on, in the page's order, with the
+/// PWM channels folded into one item so the fullest set still fits the line, "UART5,
+/// I2C3, PWM2 ch4-7". Off when none is.
+fn gpio_summary(on: &[bool]) -> String {
+    const PWM: &str = "PWM2 ch";
+    let mut items: Vec<String> = Vec::new();
+    let mut channels: Vec<u8> = Vec::new();
+    for ((_, label, _), _) in boot::GPIO_HEADER.iter().zip(on).filter(|(_, &set)| set) {
+        match label.strip_prefix(PWM).and_then(|n| n.parse().ok()) {
+            Some(ch) => channels.push(ch),
+            None => items.push((*label).to_string()),
+        }
+    }
+    if !channels.is_empty() {
+        // Runs of neighbouring channels as a range: ch4-7, ch4-5, ch7.
+        let mut runs: Vec<String> = Vec::new();
+        let mut start = 0;
+        for i in 1..=channels.len() {
+            if i == channels.len() || channels[i] != channels[i - 1] + 1 {
+                runs.push(match i - start {
+                    1 => format!("ch{}", channels[start]),
+                    _ => format!("ch{}-{}", channels[start], channels[i - 1]),
+                });
+                start = i;
+            }
+        }
+        items.push(format!("PWM2 {}", runs.join(", ")));
+    }
+    if items.is_empty() {
+        "Off".to_string()
+    } else {
+        items.join(", ")
+    }
 }
 
 /// How tall a popup line of each kind is, matching what boot.slint draws.
@@ -197,20 +244,34 @@ fn kernel_base_of(profile: &Profile, running: &str) -> usize {
 
 /// The Config screen, top to bottom.
 ///
-/// Only Kernel works. The four above it are the hardware groups this screen is going to
-/// hold, listed so the shape is visible and dimmed because neither of the two things
-/// they need exists yet: a catalog shipped with the kernel that maps a `.dtbo` to a
-/// category and a readable label, and a way to enable a unit inside a profile that is
-/// not running. The profile's facts are not here: they are the View screen this opens
-/// from.
-const CONFIG_LINES: [&str; 5] = ["GPIO", "Hardware config", "Video Out", "Services", "Kernel"];
+/// GPIO opens the GPIO header's buses. Hardware config and Services are the hardware
+/// groups this screen is going to hold, listed so the shape is visible and dimmed
+/// because neither of the two things they need exists yet: a catalog shipped with the
+/// kernel that maps a `.dtbo` to a category and a readable label, and a way to enable a
+/// unit inside a profile that is not running. The profile's facts are not here: they
+/// are the View screen this opens from.
+const CONFIG_LINES: [&str; 7] =
+    ["GPIO", "Hardware config", "Video Out", "Services", "Kernel", "RAM", "Swap"];
+/// Opens the GPIO header page, `Popup::Gpio`.
+const CONFIG_GPIO: usize = 0;
 /// Which output the display pipeline is wired to, from `boot::VIDEO_OUT`.
 const CONFIG_VIDEO: usize = 2;
 const CONFIG_KERNEL: usize = 4;
+const CONFIG_RAM: usize = 5;
+const CONFIG_SWAP: usize = 6;
 
 /// Whether a line has a value to spin through, rather than one to read.
 fn spins(line: usize) -> bool {
-    line == CONFIG_VIDEO || line == CONFIG_KERNEL
+    matches!(line, CONFIG_VIDEO | CONFIG_KERNEL | CONFIG_RAM | CONFIG_SWAP)
+}
+
+/// One step of a spinner of `n` values from `at`: Right goes on, Left goes back, and
+/// both stop at the end.
+fn spun(at: usize, n: usize, key: FlipperKey) -> usize {
+    match key {
+        FlipperKey::Left => at.saturating_sub(1),
+        _ => (at + 1).min(n.saturating_sub(1)),
+    }
 }
 
 /// Everything on screen, as data.
@@ -242,10 +303,18 @@ pub struct View {
     pub size_unit: String,
     /// True while the size is still a spinner, so the slot keeps its widest width.
     pub size_loading: bool,
+    /// Whether the header carries the size line at all. Config has no room for it: its
+    /// lines fill the panel once the band is only as tall as the name.
+    pub show_size: bool,
     /// The popup frame's width, measured from its own content.
     pub popup_w: f32,
     /// How tall its rows come to, measured the same way: they are not all one pitch.
     pub popup_body_h: f32,
+    /// How many rows the popup has, how many fit and are in `popup_lines`, and the
+    /// first of them, for its scrollbar. Total and shown are equal when all fit.
+    pub popup_scroll_total: i32,
+    pub popup_scroll_visible: i32,
+    pub popup_scroll_offset: i32,
     /// The width the size value's slot holds while it is still a spinner, so the
     /// line does not change width as the value lands.
     pub size_slot_w: f32,
@@ -273,12 +342,13 @@ pub struct View {
 /// The heart or the medium badge sits right after the name, so it is part of what has to
 /// fit; only one of the two is ever drawn.
 pub fn status_fits(label: &str, status: &str, auto: bool, medium: boot::Medium) -> bool {
-    use crate::font::TITLE;
+    status.is_empty() || crate::font::tw(label) <= label_room(status, auto, medium)
+}
+
+/// How wide a row's label can be with `status` drawn beside it.
+fn label_room(status: &str, auto: bool, medium: boot::Medium) -> i32 {
     use crate::theme::metric::{BOOT_ICON_BOX_W, BOOT_SD_W, BOOT_TEXT_GAP, ICON_PAD, STATUS_PAD_R};
 
-    if status.is_empty() {
-        return true;
-    }
     let badge = if auto {
         BADGE_GAP + HEART_W
     } else if medium != boot::Medium::Internal {
@@ -287,14 +357,15 @@ pub fn status_fits(label: &str, status: &str, auto: bool, medium: boot::Medium) 
         0
     };
     let label_x = ICON_PAD + BOOT_ICON_BOX_W + BOOT_TEXT_GAP;
-    let used = label_x
-        + i32::from(TITLE.text_width(label))
-        + badge
-        + GAP
-        + i32::from(TITLE.text_width(status))
-        + STATUS_PAD_R;
-    used <= crate::PANEL_W as i32
+    crate::PANEL_W as i32 - label_x - badge - GAP - crate::font::tw(status) - STATUS_PAD_R
 }
+
+/// What a failed profile's row says in place of when it was last used.
+pub const FAILED: &str = "Failed";
+
+/// Why Auto Start refuses a failed profile, and the way out: a clean boot by hand
+/// blesses it again.
+const AUTO_START_FAILED: &str = "Last boot failed\nBoot it once first";
 
 /// The gap boot.slint leaves between a label and the badge after it, and the least this
 /// leaves between either of them and the status.
@@ -411,13 +482,18 @@ pub struct BootMenu {
     /// entries, while it is somewhere other than the kernel that profile boots.
     ///
     /// A spin is not a write: walking past three kernels would otherwise rewrite the
-    /// profile's entries and put each one on trial in turn. The value is committed when
-    /// the line is left -- by OK, by Back, or by moving off it -- so one choice is one
-    /// write.
+    /// profile's entries and put each one on trial in turn. The value is saved when
+    /// the Config screen is left, so one choice is one write.
     kernel_pick: Option<usize>,
     /// Where the Video Out spinner stands, while it is somewhere other than what the
     /// profile's own entry applies.
     video_pick: Option<usize>,
+    /// Where the RAM and Swap spinners stand, on the same terms.
+    ram_pick: Option<usize>,
+    swap_pick: Option<usize>,
+    /// Which GPIO header buses are on, while that differs from what the profile's own
+    /// entry applies. One flag per row of `boot::GPIO_HEADER`.
+    gpio_pick: Option<Vec<bool>>,
     space: Option<Space>,
     space_rx: Option<Receiver<Option<Space>>>,
     space_done: bool,
@@ -474,6 +550,9 @@ impl BootMenu {
             popup_index: 0,
             kernel_pick: None,
             video_pick: None,
+            ram_pick: None,
+            swap_pick: None,
+            gpio_pick: None,
             space: None,
             space_rx: None,
             space_done: false,
@@ -656,6 +735,15 @@ impl BootMenu {
 }
 
 impl BootMenu {
+    /// Whether nothing is running that leaving would hide the end of: no action in
+    /// its Busy popup and no boot or reboot under way. A popup that only shows or
+    /// asks something is left with the menu.
+    pub fn can_leave(&self) -> bool {
+        !matches!(self.popup, Some(Popup::Busy(..)))
+            && self.booting.is_none()
+            && self.rebooting.is_none()
+    }
+
     /// A key. Every one of them stops the countdown first: a person pressing buttons
     /// is not waiting for the default to be chosen for them.
     pub fn key(&mut self, event: KeyEvent) -> Outcome {
@@ -702,6 +790,7 @@ impl BootMenu {
         let actions = profile.as_ref().map(boot::edit_actions).unwrap_or_default();
         match open {
             Popup::Config => return self.config_key(key, &profile),
+            Popup::Gpio => return self.gpio_key(key, &profile),
             // The facts, and one line that leads on: OK follows it, Back and Escape
             // leave, and anything else leaves too, as this screen always has.
             Popup::View => match key {
@@ -712,6 +801,9 @@ impl BootMenu {
                     self.popup_index = 0;
                     self.kernel_pick = None;
                     self.video_pick = None;
+                    self.ram_pick = None;
+                    self.swap_pick = None;
+                    self.gpio_pick = None;
                 }
                 FlipperKey::Escape | FlipperKey::Back | FlipperKey::Edit => {}
                 _ => self.popup = Some(Popup::View),
@@ -730,6 +822,11 @@ impl BootMenu {
                     // Auto Start is reversible and immediate; the rest change or
                     // destroy a profile, so they ask first.
                     match actions.get(self.popup_index).copied() {
+                        // The digit would move, but a spent entry sorts last whatever
+                        // its digit, so the profile still would not boot by itself.
+                        Some("Auto Start") if profile.as_ref().is_some_and(Profile::failed) => {
+                            self.popup = Some(Popup::Said(AUTO_START_FAILED.into()))
+                        }
                         Some("Auto Start") => {
                             self.popup = self.start_action("Auto Start", &profile)
                         }
@@ -780,50 +877,61 @@ impl BootMenu {
         self.video_pick.unwrap_or_else(|| profile.as_ref().map_or(0, boot::video_out_for))
     }
 
+    fn ram_at(&self, profile: &Option<Profile>) -> usize {
+        self.ram_pick.unwrap_or_else(|| profile.as_ref().map_or(boot::RAM_ALL, boot::ram_for))
+    }
+
+    fn swap_at(&self, profile: &Option<Profile>) -> usize {
+        self.swap_pick.unwrap_or_else(|| profile.as_ref().map_or(0, |p| p.swap))
+    }
+
+    /// Where a Config line's spinner stands and how many values it has, or None for a
+    /// line with nothing to spin. One kernel installed is a value to read, not a choice
+    /// to make.
+    fn config_spin(&self, line: usize, profile: &Option<Profile>) -> Option<(usize, usize)> {
+        let kernels = profile.as_ref().map_or(0, |p| p.entries.len());
+        match line {
+            CONFIG_KERNEL if kernels > 1 => Some((self.kernel_at(profile), kernels)),
+            CONFIG_VIDEO => Some((self.video_at(profile), boot::VIDEO_OUT.len())),
+            CONFIG_RAM => Some((self.ram_at(profile), boot::RAM.len())),
+            CONFIG_SWAP => Some((self.swap_at(profile), boot::SWAP.len())),
+            _ => None,
+        }
+    }
+
     /// A key on the Config screen.
     ///
     /// Up and Down move; OK opens what a line opens; Left and Right spin the value of a
-    /// line that has one, which is the kernel and the video out. Leaving such a line at
-    /// all commits what its spinner shows, so a choice is one write however it was
-    /// arrived at.
+    /// line that has one: the video out, the kernel, the memory and the swap. Nothing is written
+    /// until the screen is left: the spinners keep what they show while the cursor
+    /// moves between lines, and Back saves every one that changed in one go. Saving on
+    /// leaving a line instead swapped this screen for the saving popup, and finishing
+    /// closed it, so moving the cursor threw the person out of the screen they were in.
     fn config_key(&mut self, key: FlipperKey, profile: &Option<Profile>) -> Outcome {
         let lines = CONFIG_LINES.len();
-        let kernels = profile.as_ref().map_or(0, |p| p.entries.len());
-        let outs = boot::VIDEO_OUT.len();
         self.popup = Some(Popup::Config);
         match key {
-            FlipperKey::Down => {
-                let leaving = self.popup_index;
-                self.popup_index = (self.popup_index + 1) % lines;
-                if spins(leaving) {
-                    return self.commit(leaving, profile);
+            FlipperKey::Down => self.popup_index = (self.popup_index + 1) % lines,
+            FlipperKey::Up => self.popup_index = (self.popup_index + lines - 1) % lines,
+            FlipperKey::Right | FlipperKey::Left => {
+                if let Some((at, n)) = self.config_spin(self.popup_index, profile) {
+                    let next = Some(spun(at, n, key));
+                    match self.popup_index {
+                        CONFIG_KERNEL => self.kernel_pick = next,
+                        CONFIG_VIDEO => self.video_pick = next,
+                        CONFIG_RAM => self.ram_pick = next,
+                        _ => self.swap_pick = next,
+                    }
                 }
-            }
-            FlipperKey::Up => {
-                let leaving = self.popup_index;
-                self.popup_index = (self.popup_index + lines - 1) % lines;
-                if spins(leaving) {
-                    return self.commit(leaving, profile);
-                }
-            }
-            // One kernel installed is a value to read, not a choice to make.
-            FlipperKey::Right if self.popup_index == CONFIG_KERNEL && kernels > 1 => {
-                let at = self.kernel_at(profile);
-                self.kernel_pick = Some((at + 1) % kernels);
-            }
-            FlipperKey::Left if self.popup_index == CONFIG_KERNEL && kernels > 1 => {
-                let at = self.kernel_at(profile);
-                self.kernel_pick = Some((at + kernels - 1) % kernels);
-            }
-            FlipperKey::Right if self.popup_index == CONFIG_VIDEO => {
-                self.video_pick = Some((self.video_at(profile) + 1) % outs);
-            }
-            FlipperKey::Left if self.popup_index == CONFIG_VIDEO => {
-                self.video_pick = Some((self.video_at(profile) + outs - 1) % outs);
             }
             FlipperKey::Ok | FlipperKey::Run => match self.popup_index {
-                at if spins(at) => return self.commit(at, profile),
-                // The three hardware lines: listed, and honest about it.
+                // A spinner is set with Left and Right and saved on the way out.
+                at if spins(at) => {}
+                CONFIG_GPIO => {
+                    self.popup = Some(Popup::Gpio);
+                    self.popup_index = 0;
+                }
+                // The two hardware lines not built yet: listed, and honest about it.
                 at => {
                     self.popup = Some(Popup::Said(format!(
                         "{} is not configurable yet",
@@ -832,17 +940,63 @@ impl BootMenu {
                 }
             },
             FlipperKey::Escape | FlipperKey::Back => {
-                let leaving = self.commit(self.popup_index, profile);
+                self.save(profile);
                 if self.popup.as_ref().is_some_and(|p| matches!(p, Popup::Config)) {
-                    // Nothing to commit, so Back goes up to View, which opened this.
+                    // Nothing to save, so Back goes up to View, which opened this.
                     self.popup = Some(Popup::View);
                     self.popup_index = 0;
                 }
-                return leaving;
             }
             _ => {}
         }
         Outcome::Stay
+    }
+
+    /// A key on the GPIO header page.
+    ///
+    /// Each line is a two-value spinner, off then on: Right turns a bus on, Left turns
+    /// it off, and OK flips it. A bus whose pins another one holds stays off. Back goes
+    /// up to Config with the choice held, and leaving Config saves it with the rest.
+    fn gpio_key(&mut self, key: FlipperKey, profile: &Option<Profile>) -> Outcome {
+        let lines = boot::GPIO_HEADER.len();
+        self.popup = Some(Popup::Gpio);
+        let at = self.popup_index;
+        let mut on = self.gpio_at(profile);
+        let want = match key {
+            FlipperKey::Down => {
+                self.popup_index = (at + 1) % lines;
+                return Outcome::Stay;
+            }
+            FlipperKey::Up => {
+                self.popup_index = (at + lines - 1) % lines;
+                return Outcome::Stay;
+            }
+            FlipperKey::Right => true,
+            FlipperKey::Left => false,
+            FlipperKey::Ok | FlipperKey::Run => !on[at],
+            FlipperKey::Escape | FlipperKey::Back => {
+                self.popup = Some(Popup::Config);
+                self.popup_index = CONFIG_GPIO;
+                return Outcome::Stay;
+            }
+            _ => return Outcome::Stay,
+        };
+        if want && boot::gpio_header_clash(&on, at) {
+            return Outcome::Stay;
+        }
+        on[at] = want;
+        self.gpio_pick = Some(on);
+        Outcome::Stay
+    }
+
+    /// Which GPIO header buses are on: what has been picked, or what the profile's own
+    /// entry applies.
+    fn gpio_at(&self, profile: &Option<Profile>) -> Vec<bool> {
+        self.gpio_pick.clone().unwrap_or_else(|| {
+            profile
+                .as_ref()
+                .map_or_else(|| vec![false; boot::GPIO_HEADER.len()], boot::gpio_header_for)
+        })
     }
 
     /// Where the kernel spinner starts, and what its line shows before it is touched.
@@ -857,72 +1011,77 @@ impl BootMenu {
         kernel_base_of(profile, boot::running_kernel())
     }
 
-    /// Write the kernel the spinner shows, if it is not the one already booting.
+    /// Write what the spinners show, where it differs from what the profile has.
     ///
-    /// Clearing the pick first: the write is what makes it true, and a pick left behind
-    /// a failed write would show a choice the entries do not have.
-    /// Write what the spinner on `line` shows, if it shows something new.
-    ///
-    /// One door for both, because leaving a line is what commits it and there are
-    /// three ways to leave: up, down, and out.
-    fn commit(&mut self, line: usize, profile: &Option<Profile>) -> Outcome {
-        match line {
-            CONFIG_KERNEL => self.commit_kernel(profile),
-            CONFIG_VIDEO => self.commit_video(profile),
-            _ => Outcome::Stay,
+    /// One popup for all of them, and one thread doing them in turn. The video out and
+    /// the RAM go first: they write into the entry files by the names the list read,
+    /// and the boot order tool may rename them. The swap is in the profile's own root,
+    /// which no rename touches. Clearing the picks first: the write is what makes them
+    /// true, and a pick left behind a failed write would show a choice the profile does
+    /// not have.
+    fn save(&mut self, profile: &Option<Profile>) {
+        let kernel = self.kernel_pick.take();
+        let video = self.video_pick.take();
+        let ram = self.ram_pick.take();
+        let swap = self.swap_pick.take();
+        let gpio = self.gpio_pick.take();
+        let Some(p) = profile.clone() else { return };
+        // Against where the spinner started, which is the running kernel and not always
+        // entry 0: comparing with entry 0 dropped a pick of the kernel set to boot.
+        let base = self.kernel_base(&p);
+        let entry = kernel.filter(|&at| at != base).and_then(|at| p.entries.get(at).cloned());
+        let video = video.filter(|&at| at != boot::video_out_for(&p));
+        let ram = ram.filter(|&at| at != boot::ram_for(&p));
+        let swap = swap.filter(|&at| at != p.swap);
+        let gpio = gpio.filter(|on| *on != boot::gpio_header_for(&p));
+        if entry.is_none() && video.is_none() && ram.is_none() && swap.is_none() && gpio.is_none() {
+            return;
         }
-    }
-
-    /// Put the picked video out on the profile, which is every entry it has.
-    ///
-    /// The setting belongs to the profile rather than to one of its kernels: the row
-    /// says what comes out of the connectors when this profile runs, and it would be a
-    /// poor setting if the answer depended on which kernel a later boot happened to
-    /// pick. Each entry carries the overlay from under its own kernel's tree
-    /// directory, which `set_video_out` reads out of each file.
-    fn commit_video(&mut self, profile: &Option<Profile>) -> Outcome {
-        let Some(at) = self.video_pick.take() else {
-            return Outcome::Stay;
-        };
-        let Some(p) = profile.clone() else { return Outcome::Stay };
-        if at == boot::video_out_for(&p) {
-            return Outcome::Stay;
+        if let Some(on) = &gpio {
+            let names: Vec<&str> = boot::GPIO_HEADER
+                .iter()
+                .zip(on)
+                .filter_map(|((_, label, _), &set)| set.then_some(*label))
+                .collect();
+            crate::logline!(
+                "boot menu      {} GPIO header is to be [{}]",
+                p.name,
+                names.join(", ")
+            );
         }
-        let label = boot::VIDEO_OUT.get(at).map_or("", |(_, label)| label);
-        crate::logline!(
-            "boot menu      {} video out is to be {label} on {} entr{}",
-            p.name,
-            p.entries.len(),
-            if p.entries.len() == 1 { "y" } else { "ies" }
-        );
+        if let Some(at) = video {
+            let label = boot::VIDEO_OUT.get(at).map_or("", |(_, label)| label);
+            crate::logline!(
+                "boot menu      {} video out is to be {label} on {} entr{}",
+                p.name,
+                p.entries.len(),
+                if p.entries.len() == 1 { "y" } else { "ies" }
+            );
+        }
+        if let Some(at) = ram {
+            let label = boot::RAM.get(at).map_or("", |(_, label)| label);
+            crate::logline!("boot menu      {} is to boot with {label} of RAM", p.name);
+        }
+        if let Some(at) = swap {
+            let label = boot::SWAP.get(at).copied().unwrap_or("");
+            crate::logline!("boot menu      {} swap is to be {label}", p.name);
+        }
+        if let Some(e) = &entry {
+            crate::logline!("boot menu      {} is to boot {}", p.name, e.id);
+        }
         let (tx, rx) = std::sync::mpsc::channel();
-        self.popup = match std::thread::Builder::new().name("boot-video".into()).spawn(move || {
-            let _ = tx.send(boot::set_video_out(&p, at).map(|()| false));
+        self.popup = match std::thread::Builder::new().name("boot-config".into()).spawn(move || {
+            let done = video
+                .map_or(Ok(()), |at| boot::set_video_out(&p, at))
+                .and_then(|()| gpio.map_or(Ok(()), |on| boot::set_gpio_header(&p, &on)))
+                .and_then(|()| ram.map_or(Ok(()), |at| boot::set_ram(&p, at)))
+                .and_then(|()| swap.map_or(Ok(()), |at| boot::set_swap(&p, at)))
+                .and_then(|()| entry.map_or(Ok(()), |e| boot::set_kernel(&p.dev, &e.id)));
+            let _ = tx.send(done.map(|()| false));
         }) {
             Ok(_) => Some(Popup::Busy("Saving".into(), Some(rx))),
             Err(_) => Some(Popup::Said("could not start the change".into())),
         };
-        Outcome::Stay
-    }
-
-    fn commit_kernel(&mut self, profile: &Option<Profile>) -> Outcome {
-        let Some(at) = self.kernel_pick.take() else {
-            return Outcome::Stay;
-        };
-        if at == 0 {
-            return Outcome::Stay;
-        }
-        let Some(p) = profile.clone() else { return Outcome::Stay };
-        let Some(entry) = p.entries.get(at).cloned() else { return Outcome::Stay };
-        crate::logline!("boot menu      {} is to boot {}", p.name, entry.id);
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.popup = match std::thread::Builder::new().name("boot-kernel".into()).spawn(move || {
-            let _ = tx.send(boot::set_kernel(&p.dev, &entry.id).map(|()| false));
-        }) {
-            Ok(_) => Some(Popup::Busy("Saving".into(), Some(rx))),
-            Err(_) => Some(Popup::Said("could not start the change".into())),
-        };
-        Outcome::Stay
     }
 
     /// What the kernel line shows: the spinner's kernel while one is picked, else the
@@ -979,6 +1138,9 @@ impl BootMenu {
         self.popup_index = 0;
         self.kernel_pick = None;
         self.video_pick = None;
+        self.ram_pick = None;
+        self.swap_pick = None;
+        self.gpio_pick = None;
         self.space = None;
         self.space_done = false;
         let Some(p) = self.selected_profile().cloned() else { return };
@@ -1023,6 +1185,9 @@ impl BootMenu {
         self.popup_index = 0;
         self.kernel_pick = None;
         self.video_pick = None;
+        self.ram_pick = None;
+        self.swap_pick = None;
+        self.gpio_pick = None;
     }
 
     /// Start one of the Edit actions on a thread.
@@ -1433,13 +1598,19 @@ impl BootMenu {
                     _ => (6, (14.0, 14.0)),
                 };
                 let label = boot::display_name(&p.name);
-                let status = boot::used_ago(&p.last_used, now);
+                let last_used = boot::used_ago(&p.last_used, now);
+                // A failed profile keeps its mark and gives up the end of its name instead.
+                let (label, status) = if p.failed() {
+                    let room = label_room(FAILED, p.auto_boot, p.medium);
+                    (crate::font::fit(&label, room), FAILED.to_string())
+                } else if status_fits(&label, &last_used, p.auto_boot, p.medium) {
+                    (label, last_used.clone())
+                } else {
+                    (label, String::new())
+                };
                 Row {
-                    status: if status_fits(&label, &status, p.auto_boot, p.medium) {
-                        status
-                    } else {
-                        String::new()
-                    },
+                    status,
+                    last_used,
                     label,
                     icon,
                     icon_w,
@@ -1493,6 +1664,8 @@ impl BootMenu {
             value: String::new(),
             selected: false,
             heart: false,
+            at_start: false,
+            at_end: false,
         };
         let joined = |v: &Vec<String>| if v.is_empty() { "none".to_string() } else { v.join(" ") };
 
@@ -1577,10 +1750,15 @@ impl BootMenu {
                     value: String::new(),
                     selected: true,
                     heart: false,
+                    at_start: false,
+                    at_end: false,
                 });
             }
             Some(Popup::Config) => {
+                let held = Some(profile.clone());
                 for (i, line) in CONFIG_LINES.iter().enumerate() {
+                    // A line with nothing to spin is at both ends.
+                    let (at, n) = self.config_spin(i, &held).unwrap_or((0, 1));
                     lines.push(PopupLine {
                         // All one kind: a setting, its name on the left and its value on
                         // the right. The three that are not built yet have no value to
@@ -1590,14 +1768,52 @@ impl BootMenu {
                         y: 0.0,
                         text: (*line).to_string(),
                         value: match i {
+                            CONFIG_GPIO => gpio_summary(&self.gpio_at(&Some(profile.clone()))),
                             CONFIG_KERNEL => self.kernel_value(&profile),
                             CONFIG_VIDEO => boot::VIDEO_OUT
                                 .get(self.video_at(&Some(profile.clone())))
                                 .map_or(String::new(), |(_, label)| (*label).to_string()),
+                            CONFIG_RAM => boot::RAM
+                                .get(self.ram_at(&Some(profile.clone())))
+                                .map_or(String::new(), |(_, label)| (*label).to_string()),
+                            CONFIG_SWAP => boot::SWAP
+                                .get(self.swap_at(&Some(profile.clone())))
+                                .map_or(String::new(), |label| (*label).to_string()),
                             _ => String::new(),
                         },
                         selected: i == self.popup_index,
                         heart: false,
+                        at_start: at == 0,
+                        at_end: at + 1 >= n,
+                    });
+                }
+            }
+            Some(Popup::Gpio) => {
+                let on = self.gpio_at(&Some(profile.clone()));
+                for (i, (_, label, pins)) in boot::GPIO_HEADER.iter().enumerate() {
+                    // Each signal by its role and pin, "TX B5", or the pin alone for a
+                    // bus with a single one.
+                    let signals: Vec<String> = pins
+                        .iter()
+                        .map(|(role, pin)| {
+                            if role.is_empty() {
+                                pin.to_string()
+                            } else {
+                                format!("{role} {pin}")
+                            }
+                        })
+                        .collect();
+                    lines.push(PopupLine {
+                        kind: 2,
+                        y: 0.0,
+                        text: format!("{label} {}", signals.join(", ")),
+                        value: if on[i] { "ON" } else { "OFF" }.to_string(),
+                        selected: i == self.popup_index,
+                        heart: false,
+                        // Off then on, so each end drops its chevron. A bus that cannot
+                        // go on drops the one that would turn it on.
+                        at_start: !on[i],
+                        at_end: on[i] || boot::gpio_header_clash(&on, i),
                     });
                 }
             }
@@ -1610,6 +1826,8 @@ impl BootMenu {
                         value: String::new(),
                         selected: i == self.popup_index,
                         heart: *action == "Auto Start" && profile.auto_boot,
+                        at_start: false,
+                        at_end: false,
                     });
                 }
             }
@@ -1628,7 +1846,7 @@ impl BootMenu {
                 None => what.clone(),
             }),
             Some(Popup::Said(msg)) => {
-                message.push(msg.clone());
+                message.extend(msg.lines().map(str::to_string));
                 button = "Press any key".into();
             }
             None => {}
@@ -1651,13 +1869,28 @@ impl BootMenu {
         // Measured here rather than in Slint, which cannot take a maximum across a
         // model, and because the advance tables are on this side. The name is in
         // Born2bSportyV2 and everything else in HaxrCorp, so two tables are involved.
-        // Each row's offset, and what they come to: two pitches in one popup.
-        let mut popup_body_h = 0.0f32;
-        for line in &mut lines {
-            line.y = popup_body_h;
-            popup_body_h += line_h(line.kind);
-        }
+        let show_size = !matches!(self.popup, Some(Popup::Config | Popup::Gpio));
 
+        // Rows that do not all fit under the band show the window the cursor is in,
+        // by the same rule as the menu's own list, and the frame keeps room for a
+        // scrollbar. The width is still measured over every row, so the frame does not
+        // change width as the window moves.
+        let total = lines.len();
+        let shown = if lines.iter().all(|l| l.kind != 0) {
+            use crate::theme::metric::{
+                POPUP_BODY_PAD, POPUP_HDR_BARE_H, POPUP_HDR_H, POPUP_ROW_H,
+            };
+            let hdr = if show_size { POPUP_HDR_H } else { POPUP_HDR_BARE_H };
+            let fit = (i32::from(crate::theme::PANEL_H) - hdr - 2 * POPUP_BODY_PAD) / POPUP_ROW_H;
+            total.min(fit.max(1) as usize)
+        } else {
+            total
+        };
+        let first = (self.popup_index + 1).saturating_sub(shown).min(total - shown);
+        let title = match self.popup {
+            Some(Popup::Gpio) => "GPIO Header".to_string(),
+            _ => boot::display_name(&profile.name).replace(['[', ']'], ""),
+        };
         let popup_w = {
             use crate::font::{ROW_ACTIVE, TITLE};
             use crate::theme::metric::{POPUP_MAX_W, POPUP_PAD_H, SIZE_GAP};
@@ -1670,11 +1903,20 @@ impl BootMenu {
                 } else {
                     SIZE_GAP as u16 + TITLE.text_width(&size_unit)
                 };
-            let name_line = POPUP_PAD_H as u16
-                + 14
-                + 4
-                + ROW_ACTIVE.text_width(&boot::display_name(&profile.name))
-                + POPUP_PAD_H as u16;
+            let name_line =
+                POPUP_PAD_H as u16 + 14 + 4 + ROW_ACTIVE.text_width(&title) + POPUP_PAD_H as u16;
+            // This page's values are its own two words; every other settings row can
+            // hold what Config's spinners can.
+            // The GPIO line's value is not a spinner's, so it is measured as it stands.
+            let widest = if matches!(self.popup, Some(Popup::Gpio)) {
+                TITLE.text_width("ON").max(TITLE.text_width("OFF"))
+            } else {
+                lines
+                    .iter()
+                    .filter(|l| l.kind == 2)
+                    .map(|l| TITLE.text_width(&l.value))
+                    .fold(widest_value(&profile), u16::max)
+            };
             // The body is whichever of the two lists is showing. A settings row is its
             // name, a gap, the widest value it can hold and the chevrons either side --
             // the WIDEST, not the one showing, so spinning through a profile's kernels
@@ -1684,9 +1926,7 @@ impl BootMenu {
             for line in &lines {
                 let mut w = TITLE.text_width(&line.text);
                 if line.kind == 2 && !line.value.is_empty() {
-                    w += SIZE_GAP as u16
-                        + widest_value(&profile)
-                        + 2 * (SIZE_GAP as u16 + TITLE.text_width(">"));
+                    w += SIZE_GAP as u16 + widest + 2 * (SIZE_GAP as u16 + TITLE.text_width(">"));
                 }
                 body = body.max(w);
             }
@@ -1696,9 +1936,19 @@ impl BootMenu {
             if !button.is_empty() {
                 body = body.max(TITLE.text_width(&button));
             }
-            let widest = size_line.max(name_line).max(body + 2 * POPUP_PAD_H as u16);
+            let size_line = if show_size { size_line } else { 0 };
+            let gutter = if shown < total { crate::theme::metric::POPUP_GUTTER as u16 } else { 0 };
+            let widest = size_line.max(name_line).max(body + 2 * POPUP_PAD_H as u16 + gutter);
             f32::from((widest + 12).min(POPUP_MAX_W as u16))
         };
+
+        // Each shown row's offset, and what they come to: two pitches in one popup.
+        let mut lines: Vec<PopupLine> = lines.into_iter().skip(first).take(shown).collect();
+        let mut popup_body_h = 0.0f32;
+        for line in &mut lines {
+            line.y = popup_body_h;
+            popup_body_h += line_h(line.kind);
+        }
 
         View {
             rows,
@@ -1711,7 +1961,7 @@ impl BootMenu {
             booting: self.booting.as_ref().map(|(l, _)| l.clone()).unwrap_or_default(),
             going_down: self.rebooting.is_some(),
             popup_open: self.popup.is_some(),
-            popup_title: boot::display_name(&profile.name).trim_matches(['[', ']']).to_string(),
+            popup_title: title,
             popup_icon,
             popup_lines: lines,
             popup_message: message,
@@ -1719,8 +1969,12 @@ impl BootMenu {
             size_num,
             size_unit,
             size_loading: !(self.space.is_some() || self.space_done),
+            show_size,
             popup_w,
             popup_body_h,
+            popup_scroll_total: total as i32,
+            popup_scroll_visible: shown as i32,
+            popup_scroll_offset: first as i32,
             // While loading, the slot is the widest spinner frame; once the value
             // lands it is the value's own width.
             size_slot_w: if self.space.is_some() || self.space_done {
@@ -1889,6 +2143,247 @@ mod tests {
         assert_eq!(menu.cheap, Some(true));
         // And the row under the cursor is loadable again straight away.
         assert!(worth_arming(menu.cheap, ARM_SETTLE, menu.asked.as_ref(), &aim));
+    }
+
+    fn failed(name: &str) -> boot::Profile {
+        boot::Profile {
+            name: name.into(),
+            entries: vec![boot::Entry { tries: Some(0), ..entry("7.3.0") }],
+            ..Default::default()
+        }
+    }
+
+    /// Auto Start on a failed profile says why not instead of moving the digit, which
+    /// would leave it sorting last and something else booting by itself.
+    #[test]
+    fn auto_start_refuses_a_failed_profile() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        menu.profiles = vec![failed("@Desktop")];
+        let at = boot::edit_actions(&menu.profiles[0]).iter().position(|a| *a == "Auto Start");
+        menu.popup_index = at.expect("Auto Start is offered");
+
+        menu.popup_key(Popup::Edit, FlipperKey::Ok);
+        assert!(
+            matches!(&menu.popup, Some(Popup::Said(m)) if m == AUTO_START_FAILED),
+            "nothing was said"
+        );
+        assert_eq!(menu.view().popup_message, ["Last boot failed", "Boot it once first"]);
+    }
+
+    /// A failed row says so, and keeps saying so on a name too long to sit beside it.
+    /// What it was last used stays available to whoever has the room to show it.
+    #[test]
+    fn a_failed_row_is_marked_whatever_its_name() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let long = "@Desktop__A-Very-Long-Name-For-A-Profile-That-Was-Cloned__";
+        menu.profiles = vec![failed("@Desktop"), failed(long)];
+        let rows = menu.view().rows;
+
+        assert_eq!(rows[0].status, FAILED);
+        assert_eq!(rows[0].label, boot::display_name("@Desktop"));
+        assert_eq!(rows[1].status, FAILED);
+        assert!(rows[1].label.ends_with(".."), "{}", rows[1].label);
+        assert!(status_fits(&rows[1].label, FAILED, false, boot::Medium::Internal));
+        assert_eq!(rows[1].last_used, boot::used_ago("", std::time::SystemTime::now()));
+    }
+
+    fn config(menu: &mut BootMenu, line: usize) -> Option<Profile> {
+        menu.popup = Some(Popup::Config);
+        menu.popup_index = line;
+        Some(boot::Profile {
+            entries: vec![entry("7.3.0-new"), entry("7.2.0-old")],
+            ..Default::default()
+        })
+    }
+
+    /// Moving between Config's lines writes nothing and closes nothing. Saving on
+    /// leaving a line swapped the screen for the saving popup, which then closed, so
+    /// a person who changed the kernel and pressed Down was thrown out to the list.
+    #[test]
+    fn config_keeps_its_picks_while_the_cursor_moves() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_KERNEL);
+        menu.config_key(FlipperKey::Right, &profile);
+        assert_eq!(menu.kernel_pick, Some(1));
+
+        menu.config_key(FlipperKey::Down, &profile);
+        assert!(matches!(menu.popup, Some(Popup::Config)), "Down left Config");
+        assert_eq!(menu.popup_index, CONFIG_RAM);
+        assert_eq!(menu.kernel_pick, Some(1), "the pick was dropped on the way past");
+
+        // Left from all of it is one step less; Swap keeps its own pick.
+        menu.config_key(FlipperKey::Left, &profile);
+        menu.config_key(FlipperKey::Down, &profile);
+        menu.config_key(FlipperKey::Right, &profile);
+        assert_eq!((menu.ram_pick, menu.swap_pick), (Some(boot::RAM_ALL - 1), Some(1)));
+
+        // Down from the last line wraps to the first.
+        menu.config_key(FlipperKey::Down, &profile);
+        assert_eq!(menu.popup_index, 0);
+
+        menu.popup_index = CONFIG_VIDEO;
+        menu.config_key(FlipperKey::Right, &profile);
+        menu.config_key(FlipperKey::Up, &profile);
+        assert!(matches!(menu.popup, Some(Popup::Config)), "Up left Config");
+        assert_eq!(menu.video_pick, Some(1));
+
+        // OK on a spinner saves nothing either: that happens on the way out.
+        menu.popup_index = CONFIG_KERNEL;
+        menu.config_key(FlipperKey::Ok, &profile);
+        assert!(matches!(menu.popup, Some(Popup::Config)), "OK left Config");
+        assert_eq!((menu.kernel_pick, menu.video_pick), (Some(1), Some(1)));
+    }
+
+    /// OK on Config's GPIO line opens the GPIO header page, and Back from it returns to
+    /// Config on the same line, with nothing saved yet.
+    #[test]
+    fn gpio_opens_from_config_and_goes_back_to_it() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_GPIO);
+        menu.config_key(FlipperKey::Ok, &profile);
+        assert!(matches!(menu.popup, Some(Popup::Gpio)), "OK did not open the GPIO page");
+        assert_eq!(menu.popup_index, 0);
+        menu.gpio_key(FlipperKey::Right, &profile);
+        menu.gpio_key(FlipperKey::Back, &profile);
+        assert!(matches!(menu.popup, Some(Popup::Config)), "Back did not return to Config");
+        assert_eq!(menu.popup_index, CONFIG_GPIO);
+        assert!(menu.gpio_pick.is_some(), "the choice was dropped on the way back");
+    }
+
+    /// Right turns a bus on, Left turns it off, OK flips it, and a bus whose pins
+    /// another holds stays off and drops the chevron that would turn it on.
+    #[test]
+    fn gpio_buses_toggle_and_a_clash_stays_off() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_GPIO);
+        menu.profiles = profile.clone().into_iter().collect();
+        menu.pending = None;
+        menu.popup = Some(Popup::Gpio);
+        let at = |label: &str| boot::GPIO_HEADER.iter().position(|(_, l, _)| *l == label).unwrap();
+        let line = |menu: &BootMenu, i: usize| {
+            let view = menu.view();
+            let l = &view.popup_lines[i];
+            (l.value.clone(), l.at_start, l.at_end)
+        };
+
+        menu.popup_index = at("UART6");
+        menu.gpio_key(FlipperKey::Right, &profile);
+        assert_eq!(line(&menu, at("UART6")), ("ON".into(), false, true));
+        menu.popup_index = at("I2C4");
+        menu.gpio_key(FlipperKey::Right, &profile);
+        assert_eq!(line(&menu, at("I2C4")), ("OFF".into(), true, true), "I2C4 went on over UART6");
+
+        menu.popup_index = at("UART6");
+        menu.gpio_key(FlipperKey::Ok, &profile);
+        assert_eq!(line(&menu, at("UART6")).0, "OFF", "OK did not flip it");
+        menu.popup_index = at("I2C4");
+        menu.gpio_key(FlipperKey::Ok, &profile);
+        assert_eq!(line(&menu, at("I2C4")).0, "ON", "freed pins stayed taken");
+
+        let view = menu.view();
+        assert_eq!(view.popup_title, "GPIO Header");
+        assert_eq!(view.popup_scroll_total as usize, boot::GPIO_HEADER.len());
+        assert_eq!(view.popup_lines[at("UART6")].text, "UART6 TX A4, RX A6");
+        assert_eq!(view.popup_lines[at("PWM2 ch4")].text, "PWM2 ch4 A3");
+    }
+
+    /// Config's GPIO line names the buses that are on, with the PWM channels folded
+    /// into runs, and says Off when none is.
+    #[test]
+    fn the_gpio_line_summarises_what_is_on() {
+        let on = |labels: &[&str]| -> Vec<bool> {
+            boot::GPIO_HEADER.iter().map(|(_, l, _)| labels.contains(l)).collect()
+        };
+        assert_eq!(gpio_summary(&on(&[])), "Off");
+        assert_eq!(gpio_summary(&on(&["UART5", "PWM2 ch5"])), "UART5, PWM2 ch5");
+        assert_eq!(gpio_summary(&on(&["PWM2 ch4", "PWM2 ch6"])), "PWM2 ch4, ch6");
+        assert_eq!(gpio_summary(&on(&["PWM2 ch4", "PWM2 ch5", "PWM2 ch7"])), "PWM2 ch4-5, ch7");
+        let full = ["UART5", "UART6", "I2C3", "PWM2 ch4", "PWM2 ch5", "PWM2 ch6", "PWM2 ch7"];
+        assert_eq!(gpio_summary(&on(&full)), "UART5, UART6, I2C3, PWM2 ch4-7");
+
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_GPIO);
+        menu.profiles = profile.clone().into_iter().collect();
+        menu.pending = None;
+        assert_eq!(menu.view().popup_lines[CONFIG_GPIO].value, "Off");
+        menu.gpio_pick = Some(on(&["I2C4"]));
+        let line = &menu.view().popup_lines[CONFIG_GPIO];
+        assert_eq!((line.value.as_str(), line.at_start, line.at_end), ("I2C4", true, true));
+    }
+
+    /// Rows that do not fit under the band scroll: the GPIO header page shows the
+    /// window the cursor is in, and Config, which fits, shows every line unscrolled.
+    #[test]
+    fn a_popup_too_tall_for_the_panel_scrolls() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_GPIO);
+        menu.profiles = profile.clone().into_iter().collect();
+        menu.pending = None;
+
+        let view = menu.view();
+        assert_eq!((view.popup_scroll_total, view.popup_scroll_offset), (7, 0));
+        assert_eq!(view.popup_scroll_visible, 7, "Config no longer fits");
+
+        menu.popup = Some(Popup::Gpio);
+        menu.popup_index = 0;
+        let view = menu.view();
+        let total = boot::GPIO_HEADER.len() as i32;
+        assert_eq!((view.popup_scroll_total, view.popup_scroll_visible), (total, 7));
+        assert_eq!(view.popup_lines.len(), 7);
+        assert!(view.popup_lines[0].selected);
+
+        menu.popup_index = boot::GPIO_HEADER.len() - 1;
+        let view = menu.view();
+        assert_eq!(view.popup_scroll_offset, total - 7, "the last row is out of the window");
+        assert!(view.popup_lines[6].selected);
+        assert_eq!(view.popup_lines[6].text, "PWM2 ch7 B3");
+    }
+
+    /// The spinners stop at their ends rather than wrapping, and the line at an end
+    /// drops the chevron that points past it.
+    #[test]
+    fn config_spinners_stop_at_their_ends() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_SWAP);
+        menu.profiles = profile.clone().into_iter().collect();
+        menu.pending = None;
+        let swap_line = |menu: &BootMenu| {
+            let view = menu.view();
+            let l = &view.popup_lines[CONFIG_SWAP];
+            (l.value.clone(), l.at_start, l.at_end)
+        };
+
+        menu.config_key(FlipperKey::Left, &profile);
+        assert_eq!(swap_line(&menu), ("Off".into(), true, false), "Left at the start wrapped");
+        for _ in 0..boot::SWAP.len() + 1 {
+            menu.config_key(FlipperKey::Right, &profile);
+        }
+        assert_eq!(swap_line(&menu), ("ZSwap".into(), false, true), "Right at the end wrapped");
+
+        menu.popup_index = CONFIG_RAM;
+        menu.config_key(FlipperKey::Right, &profile);
+        assert_eq!(menu.ram_pick, Some(boot::RAM_ALL), "8 GB is the most there is");
+    }
+
+    /// Back with nothing changed goes up to View, which opened Config. A spinner
+    /// turned and turned back is nothing changed: there is nothing to save.
+    #[test]
+    fn config_with_nothing_changed_goes_back_to_view() {
+        let mut menu = BootMenu::open(4, AutoStart::Off, Kernels::Modern);
+        let profile = config(&mut menu, CONFIG_KERNEL);
+        menu.config_key(FlipperKey::Back, &profile);
+        assert!(matches!(menu.popup, Some(Popup::View)));
+
+        let profile = config(&mut menu, CONFIG_KERNEL);
+        menu.config_key(FlipperKey::Right, &profile);
+        menu.config_key(FlipperKey::Left, &profile);
+        menu.popup_index = CONFIG_SWAP;
+        menu.config_key(FlipperKey::Right, &profile);
+        menu.config_key(FlipperKey::Left, &profile);
+        menu.config_key(FlipperKey::Back, &profile);
+        assert!(matches!(menu.popup, Some(Popup::View)), "a round trip was saved");
+        assert_eq!((menu.kernel_pick, menu.video_pick), (None, None));
+        assert_eq!((menu.ram_pick, menu.swap_pick), (None, None));
     }
 
     /// An image is remembered until something unloads it.

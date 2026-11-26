@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Brightness"
 # status = true
-# runtime = ""
 # ///
 """Screen Brightness Control for FlipCTL.
 

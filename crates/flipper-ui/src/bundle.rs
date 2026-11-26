@@ -8,7 +8,7 @@
 //! the file. The folder is where a person puts anything, and the scan runs inside a
 //! unit that can reach the GPIO and USB, so a bundle is not executed to find out what
 //! it is. What was read is kept beside a stamp of the file's size and mtime, and an
-//! unchanged file is not opened again: the steady state is one `stat` per bundle.
+//! unchanged file's architecture is checked and its cached manifest reused.
 //!
 //! There are two folders, not one. The image ships its apps in a folder of its own,
 //! which updates with the profile; the user's `Apps` is where anything they add
@@ -16,6 +16,7 @@
 //! survives a factory reset, which is the reason the apps moved there.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::app::{self, AppEntry};
@@ -33,19 +34,33 @@ pub fn root() -> PathBuf {
     app::home().join("Apps")
 }
 
-/// Both places an app can be, in the order a duplicate is resolved: the shipped one
-/// first, the user's second, so a copy of theirs shadows a copy of ours.
+/// App directories in ascending order of precedence. A source launch adds the
+/// checkout's apps before the user's directory, so a user's copy still wins.
 ///
 /// A missing folder is not an error and not worth checking for: the walk of one that
 /// is not there finds nothing, which is the same answer.
 pub fn roots() -> Vec<PathBuf> {
-    vec![PathBuf::from(SYSTEM), root()]
+    let mut roots = vec![PathBuf::from(SYSTEM)];
+    if let Some(source) = source_root() {
+        roots.extend([source.join("apps"), source.join("sample_apps")]);
+    }
+    roots.push(root());
+    roots
+}
+
+fn source_root() -> Option<PathBuf> {
+    std::env::var_os("FLIPCTL_SOURCE_ROOT").map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
 /// Whether a file is one the image shipped rather than one the user added: the one
 /// distinction that decides what may be deleted.
 pub fn shipped(path: &Path) -> bool {
     path.starts_with(SYSTEM)
+        || source_root().is_some_and(|source| {
+            ["apps", "sample_apps", "target/desktop-apps"]
+                .iter()
+                .any(|dir| path.starts_with(source.join(dir)))
+        })
 }
 
 /// Where a bundle's manifest and icon are kept once read, by key. Under the user's
@@ -60,6 +75,8 @@ pub fn cache_dir(key: &str) -> PathBuf {
 pub enum Skip {
     /// Not an AppImage at all, whatever it is called.
     NotAppImage,
+    /// An ELF executable for a different CPU.
+    WrongArchitecture,
     /// A file with no manifest of ours: a stock AppImage, or somebody's script.
     NotOurs,
     /// Could not be read; the text says why.
@@ -88,42 +105,108 @@ pub fn discover(root: &Path) -> Vec<AppEntry> {
 /// what lets somebody replace a shipped app with their own without touching what
 /// the image put there.
 ///
-/// The merge happens before anything is read, rather than by discovering each root
-/// and concatenating: the comment markers scripts are recognised by come from the
-/// runtime bundles, and a runtime the image ships has to be able to name a script
-/// the user wrote.
+/// Read bundles first to learn which comments mark scripts. Within each key, the
+/// latest valid entry wins. Companion files and incompatible binaries cannot
+/// hide a launchable app with the same stem.
 pub fn discover_all(roots: &[PathBuf]) -> Vec<AppEntry> {
-    let mut found: std::collections::BTreeMap<String, (PathBuf, Vec<String>)> =
-        std::collections::BTreeMap::new();
+    let mut found = std::collections::BTreeMap::<String, Vec<(PathBuf, Vec<String>)>>::new();
     for root in roots {
         let mut here = Vec::new();
         walk(root, root, &[], &mut here);
         for (path, key, group) in here {
-            found.insert(key, (path, group));
+            found.entry(key).or_default().push((path, group));
         }
     }
-    let files: Vec<(PathBuf, String, Vec<String>)> =
-        found.into_iter().map(|(key, (path, group))| (path, key, group)).collect();
 
     let mut apps = Vec::new();
-    for (path, key, group) in &files {
-        if is_bundle(path) {
-            if let Ok(app) = read_keyed(path, key, group) {
-                apps.push(app);
-            }
+    for (key, paths) in &found {
+        if let Some(app) = paths.iter().rev().find_map(|(path, group)| {
+            is_bundle(path).then(|| read_keyed(path, key, group).ok()).flatten()
+        }) {
+            apps.push(app);
         }
     }
+    if let Some(source) = source_root() {
+        let local: Vec<_> = source_apps(&source)
+            .filter(|entry| {
+                entry.key != "source-doom" || !apps.iter().any(|app| app.name == entry.name)
+            })
+            .collect();
+        apps.retain(|entry| {
+            entry.provides.is_empty() || !local.iter().any(|app| app.provides == entry.provides)
+        });
+        apps.extend(local);
+    }
     let markers = script::markers(&apps);
-    for (path, key, group) in &files {
-        if is_bundle(path) {
-            continue;
-        }
-        if let Ok(app) = script::read(path, key, group, &markers) {
-            apps.push(app);
+    for (key, paths) in &found {
+        let bundle = apps.iter().position(|app| &app.key == key);
+        for (path, group) in paths.iter().rev() {
+            if is_bundle(path) {
+                if bundle.is_some_and(|at| apps[at].bundle == *path) {
+                    break;
+                }
+                continue;
+            }
+            if let Ok(app) = script::read(path, key, group, &markers) {
+                if let Some(at) = bundle {
+                    apps[at] = app;
+                } else {
+                    apps.push(app);
+                }
+                break;
+            }
         }
     }
     apps.sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
     apps
+}
+
+/// The desktop build keeps executable code and mutable app data separate, like
+/// AppImages do. The original manifest still controls the name and capabilities.
+fn source_apps(source: &Path) -> impl Iterator<Item = AppEntry> + '_ {
+    fs::read_dir(source.join("apps")).into_iter().flatten().flatten().filter_map(move |entry| {
+        let dir = entry.path();
+        let name = entry.file_name().into_string().ok()?;
+        let manifest = fs::read_to_string(dir.join(app::MANIFEST)).ok()?;
+        let cmd = app::py_string(&manifest, "wayland")?;
+        let binary = Path::new(&cmd).file_name()?;
+        let launch = if binary == "AppRun" {
+            let run = dir.join("AppRun");
+            // These wrappers need only the assets in the checkout and system tools.
+            let ready = match name.as_str() {
+                "dither-test" | "video-player" => true,
+                "doom" => cfg!(target_arch = "aarch64"),
+                "python-runtime" => {
+                    std::env::var_os("FLIPCTL_SOURCE_PYTHON").as_deref() == Some(run.as_os_str())
+                }
+                "js-runtime" => {
+                    std::env::var_os("FLIPCTL_SOURCE_JS").as_deref() == Some(run.as_os_str())
+                }
+                _ => false,
+            };
+            if !ready {
+                return None;
+            }
+            run
+        } else {
+            let artifacts = source.join("target/desktop-apps");
+            [artifacts.join(std::env::consts::ARCH), artifacts.join("debug")]
+                .into_iter()
+                .map(|dir| dir.join(binary))
+                .find(|path| path.is_file() && !foreign_elf(path))?
+        };
+        if !launch.is_file() {
+            return None;
+        }
+        let group: Vec<_> = app::py_string(&manifest, "folder").into_iter().collect();
+        let key = format!("source-{name}");
+        let portable_doom = name == "doom" && cfg!(target_arch = "aarch64");
+        let mut entry = app::parse_manifest(&manifest, name, &group, dir, launch, key)?;
+        if portable_doom {
+            entry.apt.extend(["dsda-doom".into(), "freedoom".into()]);
+        }
+        Some(entry)
+    })
 }
 
 /// Every file under `root`, with what it is filed under and the folders it sits in.
@@ -149,6 +232,27 @@ fn walk(dir: &Path, root: &Path, group: &[String], out: &mut Vec<(PathBuf, Strin
             out.push((path, key, group.to_vec()));
         }
     }
+}
+
+fn foreign_elf(path: &Path) -> bool {
+    let native = match std::env::consts::ARCH {
+        "x86_64" => 62,
+        "aarch64" => 183,
+        "arm" => 40,
+        _ => return false,
+    };
+    let mut header = [0u8; 20];
+    if fs::File::open(path).and_then(|mut file| file.read_exact(&mut header)).is_err()
+        || !header.starts_with(b"\x7fELF")
+    {
+        return false;
+    }
+    let machine = match header[5] {
+        1 => u16::from_le_bytes([header[18], header[19]]),
+        2 => u16::from_be_bytes([header[18], header[19]]),
+        _ => return false,
+    };
+    machine != 0 && machine != native
 }
 
 /// Whether this is a file the squashfs reader reads.
@@ -261,6 +365,9 @@ mod imp {
     }
 
     pub fn read_keyed(path: &Path, key: &str, group: &[String]) -> Result<AppEntry, Skip> {
+        if super::foreign_elf(path) {
+            return Err(Skip::WrongArchitecture);
+        }
         let meta = fs::metadata(path).map_err(|e| Skip::Unreadable(e.to_string()))?;
         if !meta.is_file() {
             return Err(Skip::NotAppImage);
@@ -300,6 +407,7 @@ mod imp {
                 Stamp::of(&meta, Kind::Bogus).write(&dir);
                 crate::logline!("bundles        {key}: not an AppImage, skipped");
             }
+            Err(Skip::WrongArchitecture) => {}
             Err(Skip::Unreadable(why)) => {
                 crate::logline!("bundles        {key}: {why}");
             }
@@ -544,6 +652,30 @@ mod tests {
         assert_eq!(key(root, &root.join("thing.fap.AppImage")), "thing");
         // A script that goes without it keys the same way it always did.
         assert_eq!(key(root, &root.join("Test Tools/eth-led.py")), "Test Tools-eth-led");
+    }
+
+    #[test]
+    fn companion_files_cannot_shadow_an_app() {
+        let root = std::env::temp_dir().join(format!("flipctl-discovery-{}", std::process::id()));
+        let shipped = root.join("shipped");
+        let home = root.join("home");
+        fs::create_dir_all(&shipped).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let script = shipped.join("radio.fap.py");
+        let override_script = home.join("radio.fap.py");
+        fs::write(&script, "# /// flipctl\n# name = \"Built-in Radio\"\n# ///\n").unwrap();
+        fs::write(home.join("radio.slint"), "export component Radio {}").unwrap();
+
+        let roots = [shipped, home];
+        let entries = discover_all(&roots);
+        let found = entries.iter().find(|entry| entry.key == "radio").unwrap();
+        assert_eq!(found.bundle, script);
+        fs::write(&override_script, "# /// flipctl\n# name = \"Local Radio\"\n# ///\n").unwrap();
+        let entries = discover_all(&roots);
+        let found = entries.iter().find(|entry| entry.key == "radio").unwrap();
+        assert_eq!(found.bundle, override_script);
+        assert_eq!(found.name, "Local Radio");
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// A folder holds both kinds, and only the bundles are read as squashfs. What a

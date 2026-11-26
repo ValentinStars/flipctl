@@ -36,6 +36,9 @@ fn item(label: &str, status: &str, icon: i32, frames: i32) -> ListItem {
         at_start: false,
         at_end: false,
         dim: false,
+        bar: false,
+        bar_fill: 0.0,
+        bar_text_x: 0.0,
     }
 }
 
@@ -890,7 +893,7 @@ fn modem_bars_follow_the_signal() {
     screen.show().expect("show");
 
     let stride = usize::from(theme::PANEL_W);
-    let mut lit = |quality: i32| -> usize {
+    let lit = |quality: i32| -> usize {
         screen.set_modem_quality(quality);
         slint::platform::update_timers_and_animations();
         let frame = render_frame(&window).expect("a quality change repaints");

@@ -3,7 +3,6 @@
 # name = "Media"
 # status = true
 # audio = true
-# runtime = ""
 # ///
 """Media Player Remote for FlipCTL.
 

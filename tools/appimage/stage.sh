@@ -17,6 +17,11 @@
 # and the checksum in the file itself. A hand-maintained list of sha256s is a list that
 # goes wrong silently.
 #
+# Entries come out in alphabetical order by name, which is neither the order the
+# bundles are found in nor the order they are built in: a file listing sorts AppImages
+# before scripts and folders before their contents, and an index that reshuffles itself
+# whenever an app is added produces a diff nobody can read.
+#
 # `base-url` is where the bytes are served from, which is not where this tree is: the
 # index can sit in git while the files are release assets, and since release assets are
 # a flat namespace the url is the base and the file's own name, never its folder.
@@ -48,14 +53,30 @@ key_of() {
     sed -n "s/^$2 *= *\"\([^\"]*\)\".*/\1/p" <<<"$1" | head -n1
 }
 
-# The `/// flipctl` block out of a script's head, with the comment marker stripped, so
-# the same reader works on it as on an app.toml.
+# The head of a file, as a string. Read into a variable rather than piped onward,
+# because every reader below stops at the first thing it wants: `grep -q` and awk's
+# `exit` both close the pipe early, `head` dies of SIGPIPE, and `pipefail` then
+# reports the whole pipeline as failed. That turned "this file has a manifest" into
+# "this file has none" for any file short enough to lose the race, and dropped it
+# from the catalogue without a word.
+head_of() {
+    head -c 8192 "$1"
+}
+
+# Whether a file carries a manifest block at all.
+has_block() {
+    case "$(head_of "$1")" in
+        *"/// flipctl"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 block_of() {
-    head -c 8192 "$1" | awk '
+    awk '
         /\/\/\/[ \t]*flipctl[ \t]*$/ { inside = 1; next }
         inside && /^[ \t]*(#|\/\/|--)[ \t]*\/\/\/[ \t]*$/ { exit }
         inside { sub(/^[ \t]*(#|\/\/|--)[ \t]?/, ""); print }
-    '
+    ' <<<"$(head_of "$1")"
 }
 
 # The folder an app asks to be filed under, from the source manifest: a bundle carries
@@ -85,6 +106,9 @@ offer() {
     else
         sha=$(sha256sum "$file" | cut -d' ' -f1)
     fi
+    local block
+    entries=$((entries + 1))
+    block="$ORDER/$(printf '%04d' "$entries")"
     {
         echo
         echo "[[app]]"
@@ -95,8 +119,16 @@ offer() {
         if [ -n "$provides" ]; then echo "provides = \"$provides\""; fi
         echo "size = $size"
         echo "sha256 = \"$sha\""
-    } >>"$INDEX"
+    } >"$block"
+    # Sorted on a folded copy of the name, so the order is the one a reader expects
+    # rather than the one ASCII gives, where every capital sorts before every
+    # lower-case letter.
+    printf '%s\t%s\n' "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" "$block" >>"$ORDER/index"
 }
+
+ORDER=$(mktemp -d)
+trap 'rm -rf "$ORDER"' EXIT
+entries=0
 
 mkdir -p "$DEST"
 cat >"$INDEX" <<EOF
@@ -130,7 +162,7 @@ while IFS= read -r rel; do
     inside_a_bundle "$dir" && continue
     icon=false
     [ "$(basename "$rel")" = icon.png ] && icon=true
-    if [ "$icon" = false ] && ! head -c 8192 "$HERE/apps/$rel" | grep -q "/// flipctl"; then
+    if [ "$icon" = false ] && ! has_block "$HERE/apps/$rel"; then
         continue
     fi
     mkdir -p "$DEST/$dir"
@@ -149,6 +181,13 @@ while IFS= read -r rel; do
     fi
 done < <(cd "$HERE/apps" && find . -type f -not -path "*/__pycache__/*" -not -path "*/target/*" \
     -printf '%P\n' | sort)
+
+# Now that every app is known, the index is written in one pass, in order.
+if [ -s "$ORDER/index" ]; then
+    LC_ALL=C sort -t"$(printf '\t')" -k1,1 "$ORDER/index" | cut -f2 | while IFS= read -r block; do
+        cat "$block"
+    done >>"$INDEX"
+fi
 
 # A script app is only startable if something provides its runtime, and a staging with
 # no bundles at all means build.sh was never run.

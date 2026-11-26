@@ -6,14 +6,14 @@ toolkit under the GNU General Public License v3.0 (we hold no separate Slint
 license agreement), **the distributed binary as a whole is licensed under
 GPL-3.0-only**. All sources remain publicly buildable.
 
-The panel's three pixel fonts are not crates and are not covered here: they live
+The panel's pixel fonts are not crates and are not covered here: they live
 in `third_party/flipctl-fonts`, each with its own license, and HaxrCorp 4090 in
 particular is CC BY-SA 3.0 rather than MIT.
 
 This file is generated from `Cargo.lock` by `scripts/gen-third-party-licenses.sh`.
 Do not edit it by hand.
 
-- **MIT License**: 274 crate(s)
+- **MIT License**: 277 crate(s)
 - **Unicode License v3**: 26 crate(s)
 - **BSD 3-Clause "New" or "Revised" License**: 10 crate(s)
 - **GNU General Public License v3.0 only**: 9 crate(s)
@@ -1852,6 +1852,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
   * wayland-backend 0.3.17 (https://github.com/smithay/wayland-rs)
   * wayland-client 0.31.15 (https://github.com/smithay/wayland-rs)
+  * wayland-cursor 0.31.14 (https://github.com/smithay/wayland-rs)
   * wayland-protocols-misc 0.3.12 (https://github.com/smithay/wayland-rs)
   * wayland-protocols-wlr 0.3.12 (https://github.com/smithay/wayland-rs)
   * wayland-protocols 0.32.13 (https://github.com/smithay/wayland-rs)
@@ -4114,6 +4115,37 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## MIT License (MIT)
 
 Used by:
+  * xcursor 0.3.11 (https://github.com/esposm03/xcursor-rs)
+
+```
+MIT License
+
+Copyright (c) 2020 Samuele Esposito
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+--------------------------------------------------------------------------------
+
+## MIT License (MIT)
+
+Used by:
   * tinyvec_macros 0.1.1 (https://github.com/Soveu/tinyvec_macros)
 
 ```
@@ -4408,6 +4440,7 @@ Used by:
   * profiling-procmacros 1.0.18 (https://github.com/aclysma/profiling)
   * profiling 1.0.18 (https://github.com/aclysma/profiling)
   * pulp-wasm-simd-flag 0.1.1 (https://github.com/sarah-quinones/pulp/)
+  * qrcodegen 1.8.0 (https://github.com/nayuki/QR-Code-generator)
   * rspolib 0.1.2 (https://github.com/mondeja/rspolib)
   * simd_helpers 0.1.0 (https://github.com/lu-zero/simd_helpers)
   * siphasher 1.0.3 (https://github.com/jedisct1/rust-siphash)

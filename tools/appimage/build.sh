@@ -141,11 +141,18 @@ cross_build() {
     local app=$1 bin=$2
     mkdir -p "$XT" "$CARGO_HOME_DIR"
     echo "== cross-building $bin =="
+    # An app that compiles C++ may bring its own compiler wrapper, to drop a flag its
+    # dependencies insist on; see apps/screen-recorder/cxx.sh.
+    local cxx=() cxx_env=()
+    if [ -x "$HERE/apps/$app/cxx.sh" ]; then
+        cxx=("CXX_aarch64_unknown_linux_gnu=$HERE/apps/$app/cxx.sh")
+        cxx_env=(-e "CXX_aarch64_unknown_linux_gnu=/src/apps/$app/cxx.sh")
+    fi
     # readelf reads any architecture, so the check is the same either way; the
     # container's is prefixed only because that is what its binutils installs.
     if [ "$NATIVE" = 1 ]; then
         preflight_cross
-        CARGO_TARGET_DIR="$XT" \
+        env "${cxx[@]}" CARGO_TARGET_DIR="$XT" \
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
             cargo build --release --locked "${XTARGET_ARG[@]}" \
                 --manifest-path "$HERE/apps/$app/Cargo.toml"
@@ -156,6 +163,7 @@ cross_build() {
             -v "$HERE:/src" -w /src \
             -v "$XT:/target" -e CARGO_TARGET_DIR=/target \
             -v "$CARGO_HOME_DIR:/cargo" -e CARGO_HOME=/cargo \
+            "${cxx_env[@]}" \
             flipctl-cross \
             sh -c "cargo build --release --locked --target $TARGET --manifest-path apps/$app/Cargo.toml && \
                    aarch64-linux-gnu-readelf -d /target/$TARGET/release/$bin \
@@ -183,7 +191,7 @@ in_bundle() {
         docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" \
             -v "$HERE:/src" -w /src -v "$OUT:/out" \
             -e SOURCE_DATE_EPOCH="$(git -C "$HERE" log -1 --format=%ct)" -e ARCH=aarch64 \
-            -e TMPDIR=/out/tmp \
+            -e TMPDIR=/tmp \
             flipctl-bundle "$@"
     fi
 }
@@ -206,6 +214,15 @@ build_app() {
         cross_build "$app" "$bin"
         staged=(--binary "$SRCDIR/target/cross/apps/$RELDIR/$bin")
     fi
+    # An app that carries its own userspace unpacks it first: pinned Debian packages
+    # into <app>/runtime, which the staging below copies in like any other file.
+    if [ -f "$HERE/apps/$app/deb.lock" ]; then
+        "$HERE/tools/appimage/fetch-debs.sh" "$HERE/apps/$app"
+    fi
+    # Or pinned upstream release files, laid out as the AppDir is.
+    if [ -f "$HERE/apps/$app/release.lock" ]; then
+        "$HERE/tools/appimage/fetch-release.sh" "$HERE/apps/$app"
+    fi
     echo "== staging $app =="
     in_bundle python3 "$SRCDIR/tools/appimage/bundle.py" stage "apps/$app" "$OUTDIR/$app/AppDir" \
         "${staged[@]}" --version "$version" --repo "$SRCDIR"
@@ -214,12 +231,22 @@ build_app() {
     # are for the panel rather than for a desktop. The architecture is in the name
     # for the same reason. What actually decides it for flipctl is still the
     # manifest inside; this is for the person looking at the folder.
+    #
+    # In the container the bundle is written to the container's own /tmp and copied
+    # out. appimagetool reads it back through a shared mmap, which a mount that
+    # refuses one (virtiofs with cache=never) fails; it then crashes with the MD5
+    # digest left unwritten.
     echo "== packing $app-aarch64.fap.AppImage =="
     rm -f "$OUT/$app-aarch64.fap.AppImage"
-    in_bundle "$OUTDIR/tools/$TOOL" --appimage-extract-and-run -n --comp zstd \
+    local final=$OUTDIR/$app-aarch64.fap.AppImage packed=$OUTDIR/$app-aarch64.fap.AppImage
+    [ "$NATIVE" = 1 ] || packed=/tmp/$app-aarch64.fap.AppImage
+    # shellcheck disable=SC2016
+    in_bundle sh -ec 'packed=$1 final=$2; shift 2; "$@" "$packed"; [ "$packed" = "$final" ] || cp "$packed" "$final"' \
+        pack "$packed" "$final" \
+        "$OUTDIR/tools/$TOOL" --appimage-extract-and-run -n --comp zstd \
         --mksquashfs-opt -Xcompression-level --mksquashfs-opt 19 \
         --runtime-file "$OUTDIR/tools/runtime-aarch64" \
-        "$OUTDIR/$app/AppDir" "$OUTDIR/$app-aarch64.fap.AppImage" 2>&1 | grep -v "^$" | sed 's/^/  /'
+        "$OUTDIR/$app/AppDir" 2>&1 | grep -v "^$" | sed 's/^/  /'
     (cd "$OUT" && sha256sum "$app-aarch64.fap.AppImage" > "$app-aarch64.fap.AppImage.sha256")
     echo "== $(du -h "$OUT/$app-aarch64.fap.AppImage" | cut -f1) $OUT/$app-aarch64.fap.AppImage =="
 }

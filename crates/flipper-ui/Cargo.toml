@@ -24,6 +24,7 @@ wayland = [
     "dep:serde",
     "dep:serde_json",
     "dep:wayland-client",
+    "dep:wayland-cursor",
     "dep:wayland-protocols",
     "dep:wayland-protocols-wlr",
     "dep:wayland-protocols-misc",
@@ -64,6 +65,8 @@ tui = ["dep:cursive"]
 # getifaddrs, for the idle screen's IPv4 addresses. procfs exposes IPv6 as text
 # but has no IPv4 equivalent, and a UI process should not be shelling out to `ip`.
 libc = "0.2"
+# A script app's icon may sit in its manifest as a data URI, so the app stays one file.
+base64 = "0.22"
 drm = { version = "0.14", optional = true }
 # For one ioctl the safe crate cannot express: ADDFB2 with a fourcc its enum has no
 # name for. drm-fourcc 2.2.0 predates DRM_FORMAT_Y8, and the drm crate funnels every
@@ -77,7 +80,8 @@ libloading = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 wayland-client = { version = "0.31", optional = true }
-wayland-protocols = { version = "0.32", features = ["client"], optional = true }
+wayland-cursor = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"], optional = true }
 wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }
 wayland-protocols-misc = { version = "0.3", features = ["client"], optional = true }
 

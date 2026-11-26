@@ -2,7 +2,6 @@
 # /// flipctl
 # name = "Network"
 # status = true
-# runtime = ""
 # ///
 """Network Status & Traffic Radar for FlipCTL.
 
