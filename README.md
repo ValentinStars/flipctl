@@ -221,8 +221,8 @@ ExecStart=/usr/bin/python3 /path/to/waveshare_st7735.py --host 192.168.1.50 --po
 | Flipper Button | Keyboard Key | Waveshare HAT | Action |
 |---|---|---|---|
 | **OK** | `Return` / `Enter` | Key 1 / Joy Press | Open / Confirm |
-| **Back** | `Backspace` | Key 2 | Back one level or leave the app |
-| **Z** | `Z` / `Escape` | — | Go Home, cancel, or close the current view |
+| **Back** | `Escape` / `Backspace` | Key 2 | Back one level or leave the app |
+| **Z** | `Z` | — | Go Home, cancel, or close the current view |
 | **Menu** | `Tab` / `m` | Key 3 | App Switcher / Menu |
 | **D-Pad Up** | `Up Arrow` | Joy Up | Move cursor up |
 | **D-Pad Down** | `Down Arrow` | Joy Down | Move cursor down |
