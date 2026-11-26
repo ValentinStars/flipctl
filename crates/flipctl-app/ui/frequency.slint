@@ -1,0 +1,135 @@
+import { FlipperTheme } from "@theme";
+import { SelectorFrame, SoftBar } from "@flipctl/frame.slint";
+import { StatusBar } from "@flipctl/statusbar.slint";
+
+component DigitMarker inherits Rectangle {
+    in property <bool> points_down;
+    width: 9px;
+    height: 5px;
+    for row in [0, 1, 2, 3, 4]: Rectangle {
+        property <int> inset: root.points_down ? row : 4 - row;
+        x: inset * 1px;
+        y: row * 1px;
+        width: root.width - 2 * self.x;
+        height: 1px;
+        background: FlipperTheme.black;
+    }
+}
+
+export component FrequencyBody inherits Rectangle {
+    in property <[string]> frequency_digits;
+    in property <int> frequency_selected;
+    in property <int> frequency_padding;
+    in property <string> frequency_step;
+    in property <bool> frequency_is_valid;
+    in property <[string]> buttons;
+    in property <int> pressed_slot: -1;
+
+    width: 100%;
+    height: 100%;
+    background: FlipperTheme.white;
+
+    StatusBar { x: 0; y: 0; }
+
+    Text {
+        x: FlipperTheme.margin_h;
+        y: 14px;
+        text: "Frequency";
+        font-family: "Born2bSportyV2";
+        color: FlipperTheme.black;
+    }
+    Text {
+        x: parent.width - FlipperTheme.margin_h - self.width;
+        y: 14px;
+        text: "MHz";
+        color: FlipperTheme.status_dim;
+    }
+    Rectangle {
+        x: FlipperTheme.margin_h;
+        y: 32px;
+        width: parent.width - 2 * self.x;
+        height: 1px;
+        background: FlipperTheme.divider;
+    }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 42px;
+        width: 238px;
+        height: 53px;
+
+        // Keep the MHz, kHz and Hz groups aligned as the cursor moves.
+        for digit[i] in root.frequency_digits: Rectangle {
+            property <bool> active: i == root.frequency_selected;
+            x: i * 22px + (i >= 4 ? 10px : 0px) + (i >= 7 ? 8px : 0px);
+            y: 0;
+            width: 22px;
+            height: 100%;
+
+            if i == root.frequency_selected: SelectorFrame {
+                x: 1px;
+                y: 8px;
+                frame_w: 20px;
+                frame_h: 36px;
+                filled: true;
+                shadow: false;
+                stroke: false;
+            }
+            Text {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                text: digit;
+                font-size: 32px;
+                font-family: "HaxrCorp 4090";
+                color: parent.active ? FlipperTheme.white
+                    : (i < root.frequency_padding ? FlipperTheme.status_dim : FlipperTheme.black);
+            }
+            if i == root.frequency_selected: DigitMarker {
+                x: 7px;
+                y: 0;
+            }
+            if i == root.frequency_selected: DigitMarker {
+                x: 7px;
+                y: 48px;
+                points_down: true;
+            }
+        }
+        Rectangle {
+            x: 91px;
+            y: 36px;
+            width: 3px;
+            height: 3px;
+            background: FlipperTheme.black;
+        }
+    }
+
+    Text {
+        x: FlipperTheme.margin_h;
+        y: 100px;
+        text: "Step";
+        color: FlipperTheme.status_dim;
+    }
+    Text {
+        x: parent.width - FlipperTheme.margin_h - self.width;
+        y: 100px;
+        text: root.frequency_step;
+        color: FlipperTheme.black;
+    }
+    Text {
+        x: FlipperTheme.margin_h;
+        y: 113px;
+        text: root.frequency_is_valid ? "Left / Right  Select" : "Range  1 Hz to 7250 MHz";
+        color: FlipperTheme.status_dim;
+    }
+    if root.frequency_is_valid: Text {
+        x: parent.width - FlipperTheme.margin_h - self.width;
+        y: 113px;
+        text: "Up / Down  Change";
+        color: FlipperTheme.status_dim;
+    }
+
+    SoftBar {
+        buttons: root.buttons;
+        pressed_slot: root.pressed_slot;
+    }
+}

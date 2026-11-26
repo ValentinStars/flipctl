@@ -49,7 +49,7 @@ import re
 
 import slint
 
-__all__ = ["Detail", "Key", "Log", "Menu", "choice", "gauge", "heading", "item", "pair", "rule",
+__all__ = ["Detail", "Frequency", "Key", "Log", "Menu", "choice", "gauge", "heading", "item", "pair", "rule",
            "text", "text_width", "theme", "wrap",
            "key_of", "load", "load_file", "on_key", "run", "ui_dir"]
 
@@ -216,7 +216,8 @@ def item(label: str, status: str = "", value: str = "", chevrons: int = 0,
     """
     return {"label": label, "tag": tag, "status": status, "icon": 0,
             "picture": slint.Image(), "frames": 1, "chevrons": chevrons, "dim": dim,
-            "value": value, "at_start": first, "at_end": last}
+            "value": value, "at_start": first, "at_end": last,
+            "bar": False, "bar_fill": 0, "bar_text_x": 0}
 
 
 # ── Keys ─────────────────────────────────────────────────────────────────────
@@ -454,6 +455,26 @@ class _View:
         raise NotImplementedError
 
 
+class Frequency(_View):
+    """An MHz readout. The callback returns digits, selection, leading padding,
+    step label and validity. The caller owns cursor movement and validation.
+    """
+
+    def __init__(self, readout, buttons=None, on_close=None):
+        super().__init__(buttons, on_close)
+        self._readout = readout
+
+    def _draw(self, window: _Window) -> None:
+        digits, selected, padding, step, valid = self._readout()
+        window.set("frequency_digits", list(digits))
+        window.set("frequency_selected", selected)
+        window.set("frequency_padding", padding)
+        window.set("frequency_step", step)
+        window.set("frequency_is_valid", valid)
+        window.set("buttons", _buttons(self._buttons_given))
+        window.set("mode", 4)
+
+
 class Detail(_View):
     """A page of rows: `rows()` returns them, made with `pair`, `gauge` and the rest.
 
@@ -513,12 +534,14 @@ class Menu(_View):
 
     Up and Down move the cursor, round from the last row to the first, and the rows
     shown follow it; `selected` is the row under it. OK flashes that row before the
-    handler sees it, as flipctl's own menus do.
+    handler sees it, as flipctl's own menus do. With a `count` callback,
+    `items(start, stop)` supplies just the rows needed for that viewport.
     """
 
-    def __init__(self, items, buttons=None, on_close=None):
+    def __init__(self, items, buttons=None, on_close=None, *, count=None):
         super().__init__(buttons, on_close)
         self._items = items
+        self._item_count = count
         self._count = 0
         self._scroll = 0
         self.selected = 0
@@ -528,17 +551,20 @@ class Menu(_View):
             self.selected = (self.selected + step) % self._count
 
     def _draw(self, window: _Window) -> None:
-        items = list(self._items())
-        self._count = len(items)
+        items = list(self._items()) if self._item_count is None else None
+        self._count = len(items) if items is not None else self._item_count()
         self.selected = max(0, min(self.selected, self._count - 1))
         # The window moves only as far as keeps the cursor in it.
         visible = int(theme("list_visible_rows", 5))
         top = min(max(self._scroll, self.selected - visible + 1), self.selected)
         self._scroll = max(0, min(top, self._count - visible))
+        stop = min(self._scroll + visible, self._count)
+        viewport = items[self._scroll:stop] if items is not None else list(self._items(self._scroll, stop))
         window.set("mode", 2)
-        window.set("items", items)
+        window.set("items", viewport)
         window.set("selected", self.selected)
         window.set("scroll", self._scroll)
+        window.set("menu_total", self._count)
         window.set("buttons", _buttons(self._buttons_given))
 
 
